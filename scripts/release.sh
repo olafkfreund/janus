@@ -6,17 +6,14 @@ echo "=== Step 1: Rebuilding all target binaries ==="
 mkdir -p dist
 rm -rf dist/*
 
-# Build Gateway Server
-GOOS=linux GOARCH=amd64 go build -o dist/mcp-gateway-linux-amd64 main.go
-GOOS=darwin GOARCH=amd64 go build -o dist/mcp-gateway-darwin-amd64 main.go
-GOOS=darwin GOARCH=arm64 go build -o dist/mcp-gateway-darwin-arm64 main.go
-GOOS=windows GOARCH=amd64 go build -o dist/mcp-gateway-windows-amd64.exe main.go
+# Build Gateway Server (Native host Linux target only due to SQLite CGo requirement)
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o dist/mcp-gateway-linux-amd64 main.go
 
-# Build Admin CLI Client
-GOOS=linux GOARCH=amd64 go build -o dist/mcp-cli-linux-amd64 cmd/mcp-cli/main.go
-GOOS=darwin GOARCH=amd64 go build -o dist/mcp-cli-darwin-amd64 cmd/mcp-cli/main.go
-GOOS=darwin GOARCH=arm64 go build -o dist/mcp-cli-darwin-arm64 cmd/mcp-cli/main.go
-GOOS=windows GOARCH=amd64 go build -o dist/mcp-cli-windows-amd64.exe cmd/mcp-cli/main.go
+# Build Admin CLI Client (Zero dependencies, pure Go, cross-compiles everywhere with CGO_ENABLED=0)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/mcp-cli-linux-amd64 cmd/mcp-cli/main.go
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o dist/mcp-cli-darwin-amd64 cmd/mcp-cli/main.go
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o dist/mcp-cli-darwin-arm64 cmd/mcp-cli/main.go
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o dist/mcp-cli-windows-amd64.exe cmd/mcp-cli/main.go
 
 # 2. Build SBOM and run generator
 echo "=== Step 2: Generating SPDX 2.3 SBOM ==="
