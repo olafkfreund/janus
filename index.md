@@ -170,6 +170,7 @@ Configure the gateway using standard environment variables:
 | :--- | :--- | :--- |
 | `PORT` | `8899` | Port to host the Web Portal and SSE endpoints. |
 | `DATABASE_PATH` | `./mcp-gateway.db` | Local SQLite database file location. |
+| `DATABASE_URL` | `""` | Connection URI for remote PostgreSQL database (ex: `postgres://user:pass@host:5432/db`). Overrides `DATABASE_PATH` when set. |
 | `VAULT_PROVIDER` | `local` | Pluggable vault provider (`local`, `aws`, `gcp`, `azure`). |
 | `VAULT_LOCAL_PATH` | `./secrets.json` | JSON vault secrets file (used when provider is `local`). |
 | `JWT_SECRET` | *(Random)* | Secret key used to sign portal JWT session tokens. |
@@ -301,6 +302,7 @@ Metric Identifier                   Labels / Tags                               
 mcp_tool_execution_count_total      status="success",tool_name="dog_random_image"     18
 mcp_tool_execution_latency_seconds  quantile="0.9",tool_name="accounts_get_balance"   0.142
 go_memstats_alloc_bytes             -                                                 8234810
+```
 
 ---
 
@@ -354,4 +356,67 @@ echo '{"jsonrpc":"2.0","method":"tools/list","id":1}' | ./mcp-gateway -stdio
 ```
 All other connections (e.g. `stripe_*`) and administrative tools (e.g. `admin_*`) are filtered out completely from the listing and rejected with a standard JSON-RPC `-32601` error code if called directly.
 
+---
+
+### Scenario E: High-Availability Scale-Out in Kubernetes Cluster
+
+For production workloads, the gateway server is deployed as multiple stateless replicas inside a Kubernetes cluster behind an Ingress controller configured with session affinity.
+
+#### 1. Kubernetes Architecture & Traffic Flow
+Below is the architectural diagram of a scaled-out Kubernetes deployment:
+
+<div class="mermaid">
+graph TD
+    %% Custom Styling matching Gruvbox Dark
+    classDef lb fill:#3c3836,stroke:#458588,stroke-width:2px,color:#ebdbb2;
+    classDef pod fill:#282828,stroke:#b8bb26,stroke-width:3px,color:#ebdbb2;
+    classDef db fill:#3c3836,stroke:#d3869b,stroke-width:2px,color:#ebdbb2;
+    classDef client fill:#3c3836,stroke:#fe8019,stroke-width:2px,color:#ebdbb2;
+    
+    C["LLM Client (Claude)"]:::client
+    
+    subgraph K8s ["Kubernetes Cluster Namespace"]
+        Ing["NGINX Ingress Controller <br/> [Sticky Session Affinity Cookie]"]:::lb
+        
+        subgraph Pods ["Stateless Pod Replicas"]
+            Pod1["Gateway Pod 1"]:::pod
+            Pod2["Gateway Pod 2"]:::pod
+            Pod3["Gateway Pod N"]:::pod
+        end
+        
+        Service["K8s ClusterIP Service"]:::lb
+    end
+    
+    SharedDB[("Shared PostgreSQL Cluster")]:::db
+    Vault["Cloud Secrets Manager (AWS/GCP/Azure)"]:::db
+    
+    C -- "1. Establish SSE stream" --> Ing
+    Ing -- "2. Sticks connection using cookie" --> Pod1
+    
+    C -- "3. POST /messages" --> Ing
+    Ing -- "4. Routes back to active session" --> Pod1
+    
+    Pods -- "Fetch Configs & Tokens" --> SharedDB
+    Pods -- "Resolve Vault Credentials" --> Vault
+</div>
+
+#### 2. Deploy Stateless Pods with PostgreSQL
+Update the `mcp-gateway-secrets` Secret to include your database configuration, and apply `k8s-deployment.yaml` with a PostgreSQL connection string:
+```bash
+# Apply deployments
+kubectl apply -f k8s-deployment.yaml
 ```
+
+Set the environment variable:
+```yaml
+- name: DATABASE_URL
+  value: "postgres://postgres:secure_db_pass@postgres-service.default.svc.cluster.local:5432/mcp_db?sslmode=disable"
+```
+Because the storage is delegated to a shared PostgreSQL cluster, pods run completely stateless. You can scale replicas on the fly:
+```bash
+# Scale gateway instances to 5 pods
+kubectl scale deployment mcp-api-gateway --replicas=5
+```
+
+#### 3. Establish Ingress Session Affinity
+The included `Ingress` controller resource configures sticky sessions. NGINX will automatically insert a routing cookie (`route`) on client SSE requests and forward corresponding JSON-RPC POST calls back to the same pod instance, preventing "Session not found" discrepancies during execution.
