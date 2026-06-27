@@ -10,23 +10,114 @@ It acts as a secure, transparent reverse proxy that dynamically translates legac
 
 ---
 
-## Technical Concept: How It Works
+## Technical Concept & Data Flow
 
-```
-+------------------+                   +--------------------+
-|  LLM Client      |  (mTLS / Token)   |  "The Black Hole"  |
-|  (Claude/AGY)    |==================>|  MCP API Gateway   |
-+------------------+                   +---------+----------+
-                                                 |
-                       +-------------------------+-------------------------+
-                       |                         |                         |
-            (Dynamic Secrets)            (Audit Logging)             (Route Proxying)
-                       v                         v                         v
-            +--------------------+     +-------------------+     +-------------------+
-            |  Enterprise Vault  |     |   Local SQLite/   |     |    Target APIs    |
-            |  (AWS/Azure/GCP)   |     |     Postgres      |     |  (Internal REST)  |
-            +--------------------+     +-------------------+     +-------------------+
-```
+Below is the architectural topology and data flow diagram of the gateway:
+
+<div class="mermaid">
+graph TD
+    %% Custom Styling matching Gruvbox Dark
+    classDef client fill:#3c3836,stroke:#83a598,stroke-width:2px,color:#ebdbb2;
+    classDef gateway fill:#282828,stroke:#fe8019,stroke-width:3px,color:#ebdbb2;
+    classDef vault fill:#3c3836,stroke:#b16286,stroke-width:2px,color:#ebdbb2;
+    classDef storage fill:#3c3836,stroke:#b8bb26,stroke-width:2px,color:#ebdbb2;
+    classDef target fill:#3c3836,stroke:#cc241d,stroke-width:2px,color:#ebdbb2;
+    
+    subgraph Client Space ["Client Space"]
+        C["LLM Client (Claude/Antigravity)"]:::client
+        P["Admin Web Portal"]:::client
+        CLI["Admin CLI Client"]:::client
+    end
+
+    subgraph TheBlackHole ["The Black Hole (MCP Gateway Core)"]
+        direction TB
+        Auth{"Auth Filter Middleware"}:::gateway
+        Router{"Router/Dispatcher"}:::gateway
+        Renderer["Template Engine"]:::gateway
+        Audit["Audit Logger"]:::gateway
+        OTel["OTel Metric Tracker"]:::gateway
+    end
+    
+    subgraph Storage ["Storage & Auditing"]
+        DB[("SQLite / Postgres configs")]:::storage
+        Logs[("Audit Log Tables")]:::storage
+    end
+
+    subgraph Security ["Security Vaults"]
+        Local["Local Encrypted JSON"]:::vault
+        Cloud["Cloud Vault (AWS/GCP/Azure)"]:::vault
+    end
+
+    subgraph Internal ["Microservice Network"]
+        API1["Internal REST API 1"]:::target
+        API2["Internal REST API 2"]:::target
+    end
+
+    C -- "mTLS / SSE Token (TLS 1.3)" --> Auth
+    P -- "OIDC / Session JWT" --> Auth
+    CLI -- "Session JWT (REST)" --> Auth
+
+    Auth -- "Valid?" --> Router
+    Router -- "Read Configs" --> DB
+    Router -- "1. Resolve Target URL" --> Renderer
+    Router -- "2. Check Prefix Clashing" --> Renderer
+    
+    Renderer -- "3. Resolve Credentials" --> VaultResolver{"Secrets Resolver"}:::gateway
+    VaultResolver -- "Local Adapter" --> Local
+    VaultResolver -- "IAM / Instance Role" --> Cloud
+
+    VaultResolver -- "4. Inject Headers & Call" --> API1
+    VaultResolver -- "4. Inject Headers & Call" --> API2
+
+    API1 --> Audit
+    API2 --> Audit
+    Audit --> Logs
+    Audit --> OTel
+</div>
+
+### Detailed Execution Sequence
+
+Here is the exact sequence of validation, vault credentials resolution, routing execution, and metric audits during a single MCP tool call:
+
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Client as LLM Client
+    participant GW as MCP Gateway Core
+    participant DB as SQLite DB
+    participant Vault as Secret Vault
+    participant Target as Downstream API
+
+    Client->>GW: POST /messages?sessionId=... (tools/call)
+    Note over Client,GW: Content-Type: json, Auth: Bearer Token / mTLS Cert
+    GW->>GW: Authenticate Caller & Extract Claims
+    alt Authentication Failed
+        GW-->>Client: HTTP 401 Unauthorized
+    else Authentication Verified
+        GW->>DB: Query Connection & Tool Schema (toolName)
+        DB-->>GW: Return Base URL, Path, Parameters, Auth Settings
+        
+        GW->>GW: Substitute Path Parameters (e.g. /users/{{id}} -> /users/123)
+        
+        alt Authentication Required (AuthType != none)
+            GW->>Vault: Fetch Credentials (AuthSecretRef)
+            Vault-->>GW: Return decrypted token/credentials
+            GW->>GW: Inject headers (Bearer / Basic / Custom)
+        end
+        
+        GW->>Target: Execute HTTP Request (GET/POST/etc.)
+        alt Target API Timeout / Down
+            Target-->>GW: Connection Refused / Timeout
+            GW->>DB: Log Failed Execution (status=failure)
+            GW-->>Client: Return JSON-RPC Error -32603
+        else Target API Responds
+            Target-->>GW: Return HTTP Payload (JSON/Text)
+            GW->>GW: Clean and Format Response (Pretty JSON / Markdown)
+            GW->>DB: Log Successful Execution (status=success, duration)
+            GW-->>Client: Return JSON-RPC Response Content (Text/Markdown)
+        end
+    end
+</div>
 
 1. **Client Isolation**: LLM clients never communicate with the target microservices directly, nor do they possess target API credentials.
 2. **Credential Redaction**: Static authorization tokens, bearer keys, and OAuth metadata are stored in secure cloud or local key vaults. They are resolved dynamically in Go memory at query execution time.
