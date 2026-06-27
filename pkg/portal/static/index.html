@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP API Gateway Portal</title>
+    <!-- Modern Premium Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="login-container" class="glass-panel">
+        <div class="login-header">
+            <div class="logo-orb"></div>
+            <h1>MCP API Gateway</h1>
+            <p>Enterprise API Connector & Secure MCP Server</p>
+        </div>
+        <form id="login-form">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" placeholder="e.g. admin" required autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="••••••••••••" required autocomplete="current-password">
+            </div>
+            <button type="submit" class="btn-primary">Authenticate</button>
+            <div class="divider"><span>OR</span></div>
+            <button type="button" id="sso-btn" class="btn-secondary">Single Sign-On (SSO)</button>
+        </form>
+    </div>
+
+    <!-- Main Application Shell (hidden by default) -->
+    <div id="app-shell" class="hidden">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-orb"></div>
+                <div>
+                    <h2>MCP Gateway</h2>
+                    <span class="badge">SECURE</span>
+                </div>
+            </div>
+            <nav class="nav-menu">
+                <a href="#dashboard" class="nav-item active" id="nav-dashboard">
+                    <span class="icon">📊</span> Dashboard
+                </a>
+                <a href="#connections" class="nav-item" id="nav-connections">
+                    <span class="icon">🔗</span> API Connections
+                </a>
+                <a href="#endpoints" class="nav-item" id="nav-endpoints">
+                    <span class="icon">🛠️</span> MCP Tools
+                </a>
+                <a href="#openapi" class="nav-item" id="nav-openapi">
+                    <span class="icon">📖</span> API Docs
+                </a>
+                <a href="#vault" class="nav-item" id="nav-vault">
+                    <span class="icon">🔑</span> Security Vault
+                </a>
+                <a href="#logs" class="nav-item" id="nav-logs">
+                    <span class="icon">📑</span> Audit Logs
+                </a>
+                <a href="#settings" class="nav-item" id="nav-settings">
+                    <span class="icon">⚙️</span> Settings
+                </a>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <span class="user-avatar">👤</span>
+                    <span id="display-user">Admin</span>
+                </div>
+                <button id="logout-btn" class="btn-icon">Logout ➔</button>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            <header class="top-bar">
+                <h1 id="page-title">Dashboard</h1>
+                <div class="status-indicator">
+                    <span class="pulse-dot green"></span>
+                    <span>Gateway Active (SSE Listener)</span>
+                </div>
+            </header>
+
+            <!-- Dashboard View -->
+            <section id="view-dashboard" class="content-section">
+                <div class="stats-grid">
+                    <div class="stat-card glass">
+                        <h3>Total API Connections</h3>
+                        <p class="stat-num" id="stat-connections">-</p>
+                    </div>
+                    <div class="stat-card glass">
+                        <h3>Registered MCP Tools</h3>
+                        <p class="stat-num" id="stat-tools">-</p>
+                    </div>
+                    <div class="stat-card glass">
+                        <h3>Total Requests (24h)</h3>
+                        <p class="stat-num" id="stat-requests">-</p>
+                    </div>
+                    <div class="stat-card glass">
+                        <h3>Avg Latency</h3>
+                        <p class="stat-num" id="stat-latency">-</p>
+                    </div>
+                </div>
+
+                <div class="card glass mt-6">
+                    <h2>System Status & Air-Gapped Config</h2>
+                    <p>Expose isolated backend microservices to LLMs like Claude and Copilot. Add connections, define paths, map custom variables, and secure downstream client request scopes.</p>
+                    <div class="config-summary mt-4">
+                        <div class="summary-row">
+                            <strong>SSE Server Endpoint:</strong>
+                            <code id="config-sse-url">https://gateway.local/sse?token=••••</code>
+                        </div>
+                        <div class="summary-row">
+                            <strong>Vault Provider:</strong>
+                            <span class="badge" id="config-vault-provider">local</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Connections View -->
+            <section id="view-connections" class="content-section hidden">
+                <div class="flex-justify">
+                    <h2>Manage APIs</h2>
+                    <button class="btn-primary" id="btn-new-connection">+ Connect New API</button>
+                </div>
+                <div class="connections-list mt-4" id="connections-grid">
+                    <!-- Cards injected here -->
+                </div>
+            </section>
+
+            <!-- Endpoints / Tools View -->
+            <section id="view-endpoints" class="content-section hidden">
+                <div class="flex-justify">
+                    <h2>Expose Endpoints as MCP Tools</h2>
+                    <button class="btn-primary" id="btn-new-endpoint">+ Add MCP Tool</button>
+                </div>
+                <div class="table-container glass mt-4">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Tool Name</th>
+                                <th>API Source</th>
+                                <th>HTTP Route</th>
+                                <th>Method</th>
+                                <th>Description</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="endpoints-table-body">
+                            <!-- Rows injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Vault View -->
+            <section id="view-vault" class="content-section hidden">
+                <h2>Security Vault Proxy</h2>
+                <p>Register credentials, OAuth client secrets, or bearer tokens into your secure AWS Secrets Manager, Azure Key Vault, GCP Secret Manager, or Local Vault without saving plaintext strings.</p>
+                
+                <div class="vault-split mt-4">
+                    <div class="card glass">
+                        <h3>Register Secret Reference</h3>
+                        <form id="vault-form" class="mt-4">
+                            <div class="form-group">
+                                <label for="vault-key">Secret Key Reference Path</label>
+                                <input type="text" id="vault-key" placeholder="e.g. prod/internal-billing/api-key" required>
+                                <small>This key is referenced in your API Connection as "Auth Secret Ref"</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="vault-value">Secret Value / API Token</label>
+                                <textarea id="vault-value" placeholder="Enter private credentials or a JSON mapping here..." required rows="4"></textarea>
+                            </div>
+                            <button type="submit" class="btn-primary">Store Secret Securely</button>
+                        </form>
+                    </div>
+
+                    <div class="card glass">
+                        <h3>Secret References in Vault</h3>
+                        <p class="text-muted mb-2">These keys are active in the vault and can be referenced in connection configs. Values are redacted.</p>
+                        <div class="table-container mt-2">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Secret Reference Key</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="vault-table-body">
+                                    <!-- Injected by app.js -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Audit Logs View -->
+            <section id="view-logs" class="content-section hidden">
+                <h2>System Execution & Audit Logs</h2>
+                <div class="table-container glass mt-4">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Identity Source</th>
+                                <th>Tool Name</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>Errors</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logs-table-body">
+                            <!-- Rows injected here -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Settings View -->
+            <section id="view-settings" class="content-section hidden">
+                <h2>System Settings & Environments</h2>
+                <p>Configuration settings are loaded dynamically at launch from environment variables or K8s config states.</p>
+                
+                <div class="settings-grid mt-4">
+                    <div class="card glass">
+                        <h3>Active Configuration Settings</h3>
+                        <div class="config-summary mt-4">
+                            <div class="summary-row">
+                                <strong>HTTP/HTTPS Bind Port:</strong>
+                                <span id="settings-port">-</span>
+                            </div>
+                            <div class="summary-row">
+                                <strong>Database Storage Path:</strong>
+                                <span id="settings-db-path">-</span>
+                            </div>
+                            <div class="summary-row">
+                                <strong>Active Vault Provider:</strong>
+                                <span class="badge" id="settings-vault-provider">-</span>
+                            </div>
+                            <div class="summary-row">
+                                <strong>Local Vault Store Location:</strong>
+                                <span id="settings-vault-local-path">-</span>
+                            </div>
+                            <div class="summary-row">
+                                <strong>OIDC Single Sign-On (SSO):</strong>
+                                <span id="settings-oidc-status">-</span>
+                            </div>
+                            <div class="summary-row">
+                                <strong>TLS Encryption Profile:</strong>
+                                <span id="settings-tls-status">-</span>
+                            </div>
+                            <div class="summary-row">
+                                <strong>Mutual TLS (mTLS) Status:</strong>
+                                <span id="settings-mtls-status">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card glass">
+                        <h3>How to Configure Vault Providers</h3>
+                        <p class="text-muted mt-2">Specify the provider using the <code>VAULT_PROVIDER</code> environment variable:</p>
+                        
+                        <div class="vault-guide mt-4">
+                            <details class="guide-item" open>
+                                <summary><strong>1. Local File Vault (Default / Air-Gapped)</strong></summary>
+                                <div class="guide-content mt-2">
+                                    <p>Stores keys encrypted at rest in a local file. Ideal for air-gapped systems or offline developers.</p>
+                                    <code>VAULT_PROVIDER=local</code><br>
+                                    <code>VAULT_LOCAL_PATH=/app/data/secrets.json</code>
+                                </div>
+                            </details>
+                            
+                            <details class="guide-item mt-2">
+                                <summary><strong>2. AWS Secrets Manager</strong></summary>
+                                <div class="guide-content mt-2">
+                                    <p>Fetches secrets from AWS Secrets Manager. Authenticates using standard IAM roles (IRSA in EKS or instance profiles).</p>
+                                    <code>VAULT_PROVIDER=aws</code>
+                                </div>
+                            </details>
+                            
+                            <details class="guide-item mt-2">
+                                <summary><strong>3. Google Cloud Secret Manager</strong></summary>
+                                <div class="guide-content mt-2">
+                                    <p>Fetches secrets from GCP Secret Manager. Authenticates using Application Default Credentials (ADC) or GKE Workload Identity.</p>
+                                    <code>VAULT_PROVIDER=gcp</code>
+                                </div>
+                            </details>
+
+                            <details class="guide-item mt-2">
+                                <summary><strong>4. Azure Key Vault</strong></summary>
+                                <div class="guide-content mt-2">
+                                    <p>Fetches secrets from Azure Key Vault. Authenticates using Managed Identities (AD Workload Identity).</p>
+                                    <code>VAULT_PROVIDER=azure</code>
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- OpenAPI Docs View -->
+            <section id="view-openapi" class="content-section hidden">
+                <div class="flex-justify">
+                    <h2>Consolidated OpenAPI Documentation</h2>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <a href="/swagger.html" target="_blank" class="btn-secondary" id="btn-interactive-swagger" style="width: auto;">Interactive Swagger UI</a>
+                        <a href="/api/openapi.json" target="_blank" class="btn-primary" id="btn-raw-openapi">View Raw JSON</a>
+                    </div>
+                </div>
+                <p class="text-muted mt-2">This is a consolidated OpenAPI 3.0 specification generated dynamically from all active connections and endpoints. It outlines the full schema, routes, parameters, and access scopes.</p>
+                
+                <div class="card glass mt-4">
+                    <h3>Swagger Unified JSON Schema</h3>
+                    <div class="table-container mt-4" style="background: hsla(220, 15%, 8%, 0.8); padding: 1.5rem; max-height: 500px; overflow-y: auto;">
+                        <pre><code id="openapi-code-block" style="color: hsl(120, 80%, 75%); font-family: monospace; font-size: 0.9rem;">Loading documentation...</code></pre>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Connection Modal -->
+    <div id="connection-modal" class="modal hidden">
+        <div class="modal-content glass">
+            <h2 id="connection-modal-title">Configure API Connection</h2>
+            <form id="connection-form" class="mt-4">
+                <input type="hidden" id="connection-id">
+                <div class="form-group">
+                    <label for="conn-name">Connection Name</label>
+                    <input type="text" id="conn-name" required placeholder="e.g. Billing Service">
+                </div>
+                <div class="form-group">
+                    <label for="conn-desc">Description</label>
+                    <input type="text" id="conn-desc" placeholder="Handles internal billing querying">
+                </div>
+                <div class="form-group">
+                    <label for="conn-prefix">Tool Namespace Prefix (Optional)</label>
+                    <input type="text" id="conn-prefix" placeholder="e.g. stripe_">
+                    <small class="text-muted" style="font-size: 0.75rem; color: var(--text-secondary);">Prepended to all tool names in this connection to avoid naming conflicts (e.g. stripe_get_invoice).</small>
+                </div>
+                <div class="form-group">
+                    <label for="conn-url">Base Target URL</label>
+                    <input type="url" id="conn-url" required placeholder="https://billing.internal.local">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="conn-auth">Auth Type</label>
+                        <select id="conn-auth">
+                            <option value="none">None</option>
+                            <option value="bearer">Bearer Token</option>
+                            <option value="basic">Basic Auth (Username:Password)</option>
+                            <option value="custom_headers">Custom JSON Headers</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="conn-secret">Auth Secret Reference</label>
+                        <input type="text" id="conn-secret" placeholder="e.g. prod/billing/api-key">
+                    </div>
+                </div>
+                <div class="form-group-checkbox mt-2">
+                    <input type="checkbox" id="conn-enabled" checked>
+                    <label for="conn-enabled">Enable Connection</label>
+                </div>
+                <div class="modal-actions mt-6">
+                    <button type="button" class="btn-secondary" id="btn-close-conn-modal">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Connection</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Endpoint Modal -->
+    <div id="endpoint-modal" class="modal hidden">
+        <div class="modal-content glass">
+            <h2 id="endpoint-modal-title">Configure MCP Tool Endpoint</h2>
+            <form id="endpoint-form" class="mt-4">
+                <input type="hidden" id="endpoint-id">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="ep-conn-id">API Connection Source</label>
+                        <select id="ep-conn-id" required></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="ep-tool-name">MCP Tool Name</label>
+                        <input type="text" id="ep-tool-name" required placeholder="e.g. get_invoice_by_id">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="ep-tool-desc">Tool Description (Instructions for LLM)</label>
+                    <input type="text" id="ep-tool-desc" required placeholder="Retrieves invoice details. Use this when the user asks for invoice logs.">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="ep-path">Endpoint Path (Supports {{variables}})</label>
+                        <input type="text" id="ep-path" required placeholder="/v1/invoices/{{invoice_id}}">
+                    </div>
+                    <div class="form-group">
+                        <label for="ep-method">HTTP Method</label>
+                        <select id="ep-method">
+                            <option value="GET">GET</option>
+                            <option value="POST">POST</option>
+                            <option value="PUT">PUT</option>
+                            <option value="DELETE">DELETE</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="ep-schema">Parameters Schema (JSON Schema format)</label>
+                    <textarea id="ep-schema" rows="4" placeholder='{
+  "type": "object",
+  "properties": {
+    "invoice_id": {
+      "type": "string",
+      "description": "The invoice ID code"
+    }
+  },
+  "required": ["invoice_id"]
+}'></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="ep-template">HTTP Request Body Template (For POST/PUT)</label>
+                    <textarea id="ep-template" rows="3" placeholder='{ "id": "{{invoice_id}}", "filter": "active" }'></textarea>
+                </div>
+                <div class="modal-actions mt-6">
+                    <button type="button" class="btn-secondary" id="btn-close-ep-modal">Cancel</button>
+                    <button type="submit" class="btn-primary">Save Tool</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

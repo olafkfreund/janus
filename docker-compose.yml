@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  mcp-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_PATH=/app/data/mcp-gateway.db
+      - VAULT_PROVIDER=local
+      - VAULT_LOCAL_PATH=/app/data/secrets.json
+      - JWT_SECRET=local-development-only-jwt-secret-key-1234
+      - GATEWAY_TOKEN=local-development-gateway-bearer-token-abcd
+      # To test TLS/SSL, mount certificates and set variables:
+      # - TLS_CERT_PATH=/app/certs/server.crt
+      # - TLS_KEY_PATH=/app/certs/server.key
+      # - CLIENT_CA_PATH=/app/certs/ca.crt
+    volumes:
+      - mcp-data:/app/data
+      # Mount certificates folder for testing HTTPS/mTLS
+      # - ./certs:/app/certs:ro
+    restart: unless-stopped
+
+volumes:
+  mcp-data:
+    driver: local

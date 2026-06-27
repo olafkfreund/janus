@@ -1,0 +1,23 @@
+# Go binaries
+mcp-gateway
+mcp-cli
+dist/
+
+# SQLite files
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+
+# Secrets and local configurations
+secrets.json
+.env
+.env.local
+
+# Development environments
+.devenv/
+.direnv/
+.envrc
+
+# Temporary/Task logs
+.system_generated/

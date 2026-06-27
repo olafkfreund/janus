@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{{ site.title }} - {{ site.description }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Google Fonts: Fira Code & Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg0: #282828;
+      --bg0-h: #1d2021;
+      --bg1: #3c3836;
+      --bg2: #504945;
+      --fg: #ebdbb2;
+      --fg-muted: #a89984;
+      --red: #cc241d;
+      --green: #98971a;
+      --light-green: #b8bb26;
+      --yellow: #d79921;
+      --light-yellow: #fabd2f;
+      --blue: #458588;
+      --light-blue: #83a598;
+      --purple: #b16286;
+      --aqua: #689d6a;
+      --orange: #d65d0e;
+      --light-orange: #fe8019;
+    }
+
+    body {
+      background-color: var(--bg0);
+      color: var(--fg);
+      font-family: 'Inter', sans-serif;
+      line-height: 1.6;
+      margin: 0;
+      padding: 0;
+    }
+
+    header {
+      background-color: var(--bg0-h);
+      border-bottom: 2px solid var(--bg1);
+      padding: 3rem 1rem;
+      text-align: center;
+    }
+
+    header h1 {
+      margin: 0;
+      color: var(--light-orange);
+      font-size: 2.8rem;
+      font-weight: 700;
+      font-family: 'Fira Code', monospace;
+      text-shadow: 0 0 10px rgba(254, 128, 25, 0.2);
+    }
+
+    header p {
+      color: var(--fg-muted);
+      margin: 0.8rem 0 0 0;
+      font-size: 1.2rem;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 3rem auto;
+      padding: 0 1.5rem;
+    }
+
+    a {
+      color: var(--light-blue);
+      text-decoration: none;
+      border-bottom: 1px dashed var(--light-blue);
+      transition: all 0.2s ease;
+    }
+
+    a:hover {
+      color: var(--light-orange);
+      border-bottom: 1px solid var(--light-orange);
+    }
+
+    h1, h2, h3, h4 {
+      color: var(--light-yellow);
+      font-family: 'Fira Code', monospace;
+      margin-top: 2.5rem;
+    }
+
+    h1 {
+      border-bottom: 1px solid var(--bg1);
+      padding-bottom: 0.3rem;
+      font-size: 2rem;
+    }
+
+    h2 {
+      border-left: 4px solid var(--light-orange);
+      padding-left: 0.8rem;
+      font-size: 1.5rem;
+    }
+
+    code {
+      font-family: 'Fira Code', monospace;
+      background-color: var(--bg1);
+      color: var(--light-green);
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.9rem;
+    }
+
+    pre {
+      background-color: var(--bg0-h);
+      border: 1px solid var(--bg1);
+      padding: 1.2rem;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+
+    pre code {
+      background-color: transparent;
+      color: var(--fg);
+      padding: 0;
+      font-size: 0.9rem;
+    }
+
+    blockquote {
+      border-left: 4px solid var(--purple);
+      margin: 2rem 0;
+      padding: 0.8rem 1.2rem;
+      background-color: var(--bg1);
+      color: var(--fg-muted);
+      border-radius: 0 4px 4px 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 2rem 0;
+    }
+
+    th, td {
+      border: 1px solid var(--bg1);
+      padding: 0.75rem 1rem;
+      text-align: left;
+    }
+
+    th {
+      background-color: var(--bg0-h);
+      color: var(--light-orange);
+    }
+
+    tr:nth-child(even) {
+      background-color: #2e3031;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      border-radius: 50px;
+      text-transform: uppercase;
+      font-family: 'Fira Code', monospace;
+    }
+    
+    .badge-success { background: var(--green); color: var(--fg); }
+    .badge-info { background: var(--blue); color: var(--fg); }
+    .badge-warning { background: var(--orange); color: var(--fg); }
+
+    footer {
+      text-align: center;
+      padding: 3rem;
+      color: var(--fg-muted);
+      border-top: 1px solid var(--bg1);
+      margin-top: 5rem;
+      font-size: 0.9rem;
+      background-color: var(--bg0-h);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>{{ site.title }}</h1>
+    <p>{{ site.description }}</p>
+  </header>
+  
+  <div class="container">
+    {{ content }}
+  </div>
+
+  <footer>
+    <p>&copy; 2026 Olaf Krasicki-Freund. All rights reserved. Licensed under MIT.</p>
+  </footer>
+</body>
+</html>

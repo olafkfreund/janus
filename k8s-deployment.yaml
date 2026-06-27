@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-api-gateway
+  namespace: default
+  labels:
+    app: mcp-api-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mcp-api-gateway
+  template:
+    metadata:
+      labels:
+        app: mcp-api-gateway
+    spec:
+      containers:
+      - name: gateway
+        image: mcp-api-gateway:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false # Needs to write SQLite DB in /app/data unless PostgreSQL is used
+          runAsNonRoot: true
+          runAsUser: 10001
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: PORT
+          value: "8080"
+        - name: DATABASE_PATH
+          value: "/app/data/mcp-gateway.db"
+        - name: VAULT_PROVIDER
+          value: "local" # Swap to "aws", "gcp" or "azure" in cloud envs
+        - name: VAULT_LOCAL_PATH
+          value: "/app/data/secrets.json"
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: mcp-gateway-secrets
+              key: jwt-secret
+        - name: GATEWAY_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: mcp-gateway-secrets
+              key: gateway-token
+        # Probes for high availability
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        volumeMounts:
+        - name: gateway-storage
+          mountPath: /app/data
+      volumes:
+      - name: gateway-storage
+        persistentVolumeClaim:
+          claimName: mcp-gateway-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-api-gateway
+  namespace: default
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  selector:
+    app: mcp-api-gateway
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mcp-gateway-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mcp-gateway-secrets
+  namespace: default
+type: Opaque
+stringData:
+  jwt-secret: "change-me-to-a-long-random-string-for-session-management"
+  gateway-token: "highly-secure-mcp-bearer-token-key-for-llm-clients"

@@ -1,0 +1,7 @@
+title: "The Black Hole"
+description: "Enterprise Model Context Protocol (MCP) API Gateway & Portal"
+baseurl: ""
+url: "https://olafkfreund.github.io"
+# Jekyll settings
+markdown: kramdown
+theme: null # We use a custom inline default layout for total Gruvbox Dark control
