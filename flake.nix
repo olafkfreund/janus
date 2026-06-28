@@ -1,5 +1,5 @@
 {
-  description: "MCP API Gateway & Portal Development Environment";
+  description = "MCP API Gateway & Portal Development Environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

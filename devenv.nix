@@ -1,4 +1,4 @@
-{ pkgs, lib, config, ... }:
+{ pkgs, ... }:
 
 {
   # Package list for the shell environment
