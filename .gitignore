@@ -21,3 +21,9 @@ secrets.json
 
 # Temporary/Task logs
 .system_generated/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars

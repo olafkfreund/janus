@@ -564,7 +564,8 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]i
 }
 
 func (s *MCPServer) handleAdminTool(ctx context.Context, name string, args map[string]interface{}) (string, error) {
-	if name == "admin_add_connection" {
+	switch name {
+	case "admin_add_connection":
 		conn := &storage.APIConnection{
 			Name:     fmt.Sprintf("%v", args["name"]),
 			BaseURL:  fmt.Sprintf("%v", args["base_url"]),
@@ -585,9 +586,8 @@ func (s *MCPServer) handleAdminTool(ctx context.Context, name string, args map[s
 			return "", fmt.Errorf("failed to register connection: %w", err)
 		}
 		return fmt.Sprintf("Successfully registered connection %q. ID: %s", conn.Name, conn.ID), nil
-	}
 
-	if name == "admin_add_endpoint" {
+	case "admin_add_endpoint":
 		ep := &storage.APIEndpoint{
 			ConnectionID:    fmt.Sprintf("%v", args["connection_id"]),
 			ToolName:        fmt.Sprintf("%v", args["tool_name"]),
@@ -606,16 +606,16 @@ func (s *MCPServer) handleAdminTool(ctx context.Context, name string, args map[s
 			return "", fmt.Errorf("failed to register tool endpoint: %w", err)
 		}
 		return fmt.Sprintf("Successfully registered tool %q. ID: %s", ep.ToolName, ep.ID), nil
-	}
 
-	if name == "admin_register_vault_secret" {
+	case "admin_register_vault_secret":
 		key := fmt.Sprintf("%v", args["key"])
 		val := fmt.Sprintf("%v", args["value"])
 		if err := s.vault.SetSecret(ctx, key, val); err != nil {
 			return "", fmt.Errorf("failed to register vault secret: %w", err)
 		}
 		return fmt.Sprintf("Successfully stored secret reference %q", key), nil
-	}
 
-	return "", fmt.Errorf("unknown admin management tool %q", name)
+	default:
+		return "", fmt.Errorf("unknown admin management tool %q", name)
+	}
 }

@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -74,7 +76,9 @@ func (a *AuthManager) VerifyGatewayToken(token string) bool {
 	if a.gatewayToken == "" {
 		return false
 	}
-	return token == a.gatewayToken
+	tokenHash := sha256.Sum256([]byte(token))
+	gatewayHash := sha256.Sum256([]byte(a.gatewayToken))
+	return subtle.ConstantTimeCompare(tokenHash[:], gatewayHash[:]) == 1
 }
 
 // PortalAuthMiddleware protects REST endpoints in the configuration portal

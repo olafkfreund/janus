@@ -61,16 +61,18 @@ func (l *LocalVault) load() error {
 	return json.Unmarshal(data, &l.secrets)
 }
 
-func (l *LocalVault) save() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
+func (l *LocalVault) saveLocked() error {
 	data, err := json.MarshalIndent(l.secrets, "", "  ")
 	if err != nil {
 		return err
 	}
-
 	return os.WriteFile(l.filePath, data, 0600)
+}
+
+func (l *LocalVault) save() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.saveLocked()
 }
 
 func (l *LocalVault) GetSecret(ctx context.Context, secretName string) (string, error) {
@@ -86,10 +88,9 @@ func (l *LocalVault) GetSecret(ctx context.Context, secretName string) (string, 
 
 func (l *LocalVault) SetSecret(ctx context.Context, secretName string, secretValue string) error {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.secrets[secretName] = secretValue
-	l.mu.Unlock()
-
-	return l.save()
+	return l.saveLocked()
 }
 
 func (l *LocalVault) ListSecrets(ctx context.Context) ([]string, error) {
@@ -105,10 +106,9 @@ func (l *LocalVault) ListSecrets(ctx context.Context) ([]string, error) {
 
 func (l *LocalVault) DeleteSecret(ctx context.Context, secretName string) error {
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	delete(l.secrets, secretName)
-	l.mu.Unlock()
-
-	return l.save()
+	return l.saveLocked()
 }
 
 // AWSVault represents AWS Secrets Manager

@@ -151,8 +151,13 @@ func (d *DB) initSchema() error {
 	if err != nil {
 		return err
 	}
-	// Migrate database for connection prefixes
-	_, _ = d.Exec("ALTER TABLE api_connections ADD COLUMN tool_prefix TEXT")
+	_, err = d.Exec("ALTER TABLE api_connections ADD COLUMN tool_prefix TEXT")
+	if err != nil {
+		errStr := err.Error()
+		if !strings.Contains(errStr, "duplicate column") && !strings.Contains(errStr, "already exists") {
+			return fmt.Errorf("failed to add tool_prefix column to api_connections: %w", err)
+		}
+	}
 	return nil
 }
 

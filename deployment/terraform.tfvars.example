@@ -1,0 +1,24 @@
+# ------------------------------------------------------------------------------
+# Example terraform.tfvars template.
+# Rename this file to terraform.tfvars and adjust variables as required.
+# ------------------------------------------------------------------------------
+
+# AWS Connection Config
+aws_region  = "us-west-2"
+aws_profile = "default"      # Set your local AWS CLI profile name
+
+# Environment Settings
+environment = "dev"
+cluster_name = "mcp-gateway-cluster-dev"
+
+# Network CIDRs
+vpc_cidr        = "10.0.0.0/16"
+public_subnets  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnets = ["10.0.10.0/24", "10.0.11.0/24"]
+
+# EKS Cluster Sizing
+cluster_version     = "1.29"
+node_instance_types = ["t3.medium"] # Small instance size for cost efficiency in PoC
+node_desired_size   = 2
+node_max_size       = 3
+node_min_size       = 1

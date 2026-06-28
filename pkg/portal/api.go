@@ -2,11 +2,14 @@ package portal
 
 import (
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/google/uuid"
@@ -74,8 +77,17 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 	fileServer := http.FileServer(http.FS(staticFS))
 	
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// If path doesn't point to a file with extension, serve index.html (SPA Router support)
-		if !strings.Contains(r.URL.Path, ".") {
+		// Clean the path to prevent directory traversal
+		cleanedPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if cleanedPath == "" {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		
+		// Check if the requested file exists in the embedded static assets
+		_, err := fs.Stat(staticFS, cleanedPath)
+		if err != nil {
+			// File does not exist, rewrite to index.html for SPA client-side routing
 			r.URL.Path = "/"
 		}
 		fileServer.ServeHTTP(w, r)
@@ -131,16 +143,72 @@ func (p *PortalServer) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *PortalServer) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
+	if p.config.OIDCIssuer == "" {
+		http.Error(w, `{"error":"SSO/OIDC not configured"}`, http.StatusForbidden)
+		return
+	}
+
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		http.Error(w, `{"error":"missing code"}`, http.StatusBadRequest)
 		return
 	}
 
-	// In full production, you verify the authorization code with the IDP token endpoint:
-	// resp, err := http.PostForm(p.config.OIDCIssuer + "/protocol/openid-connect/token", ...)
-	// Here, we simulate token swap and claim reading
-	username := "sso-user" // Read from IDP JWT access token claims
+	// Exchange the authorization code with the IDP token endpoint
+	tokenURL := fmt.Sprintf("%s/protocol/openid-connect/token", strings.TrimSuffix(p.config.OIDCIssuer, "/"))
+	redirectURI := fmt.Sprintf("http://localhost:%s/api/auth/sso/callback", p.config.Port)
+
+	formVals := url.Values{}
+	formVals.Set("grant_type", "authorization_code")
+	formVals.Set("code", code)
+	formVals.Set("redirect_uri", redirectURI)
+	formVals.Set("client_id", p.config.OIDCClientID)
+	formVals.Set("client_secret", p.config.OIDCClientSecret)
+
+	resp, err := http.PostForm(tokenURL, formVals)
+	if err != nil {
+		http.Redirect(w, r, "/login?error=sso-exchange-failed", http.StatusFound)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		http.Redirect(w, r, "/login?error=sso-invalid-code", http.StatusFound)
+		return
+	}
+
+	var tokenResp struct {
+		AccessSlice string `json:"access_token"`
+		IDToken     string `json:"id_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		http.Redirect(w, r, "/login?error=sso-parse-failed", http.StatusFound)
+		return
+	}
+
+	// Extract username from ID Token or Access Token claims if available
+	username := "sso-user"
+	targetToken := tokenResp.IDToken
+	if targetToken == "" {
+		targetToken = tokenResp.AccessSlice
+	}
+
+	if targetToken != "" {
+		parts := strings.Split(targetToken, ".")
+		if len(parts) >= 2 {
+			payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+			if err == nil {
+				var claims map[string]interface{}
+				if json.Unmarshal(payloadBytes, &claims) == nil {
+					if prefUser, ok := claims["preferred_username"].(string); ok && prefUser != "" {
+						username = prefUser
+					} else if email, ok := claims["email"].(string); ok && email != "" {
+						username = email
+					}
+				}
+			}
+		}
+	}
 
 	token, err := p.authManager.GenerateJWT(username, "user")
 	if err != nil {
