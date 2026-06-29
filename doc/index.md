@@ -203,8 +203,8 @@ To download dependencies and build the server and client binaries:
 
 ```bash
 # Clone the repository
-git clone https://github.com/olafkfreund/the-black-hole.git
-cd the-black-hole
+git clone https://github.com/olafkfreund/janus.git
+cd janus
 
 # Using Nix & Devenv (Recommended for complete environment setups)
 devenv shell

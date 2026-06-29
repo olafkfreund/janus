@@ -1,7 +1,7 @@
 title: "Janus"
 description: "Janus: Enterprise Model Context Protocol (MCP) API Gateway & Portal"
-baseurl: "/the-black-hole"
-url: "https://olafkfreund.github.io"
+baseurl: ""
+url: "https://janus.freundcloud.com"
 # Jekyll settings
 markdown: kramdown
 theme: null # We use a custom inline default layout for total Gruvbox Dark control

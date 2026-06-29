@@ -52,10 +52,10 @@ func main() {
 		SPDXVersion:       "SPDX-2.3",
 		DataLicense:       "CC0-1.0",
 		SPDXID:            "SPDXRef-DOCUMENT",
-		Name:              "the-black-hole",
-		DocumentNamespace: "https://github.com/olafkfreund/the-black-hole/spdx",
+		Name:              "janus",
+		DocumentNamespace: "https://github.com/olafkfreund/janus/spdx",
 		CreationInfo: CreationInfo{
-			Creators: []string{"Tool: BlackHole-SBOM-Gen-1.0"},
+			Creators: []string{"Tool: Janus-SBOM-Gen-1.0"},
 			Created:  time.Now().UTC().Format(time.RFC3339),
 		},
 		Packages: []SPDXPackage{
@@ -63,7 +63,7 @@ func main() {
 				Name:             "github.com/calitti/mcp-api-gateway",
 				SPDXID:           "SPDXRef-Package-main",
 				VersionInfo:      "0.9.0",
-				DownloadLocation: "git+https://github.com/olafkfreund/the-black-hole.git",
+				DownloadLocation: "git+https://github.com/olafkfreund/janus.git",
 				LicenseConcluded: "MIT",
 			},
 		},
