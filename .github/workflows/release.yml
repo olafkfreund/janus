@@ -78,7 +78,7 @@ jobs:
           prerelease: false
           name: Release ${{ github.ref_name }}
           body: |
-            The Black Hole - Enterprise-grade MCP API Gateway & Portal (Release ${{ github.ref_name }})
+            Janus - Enterprise-grade MCP API Gateway & Portal (Release ${{ github.ref_name }})
             
             ### Included Artifacts
             - **mcp-gateway**: API Server & SSE Listener (cross-platform)

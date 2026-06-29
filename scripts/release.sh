@@ -34,5 +34,5 @@ git push origin v0.9 -f
 
 # 5. Create GitHub Release
 echo "=== Step 5: Publishing GitHub Release v0.9 ==="
-gh release create v0.9 dist/* --title "Release v0.9" --notes "First beta release of The Black Hole: Enterprise-grade MCP API Gateway & Portal."
+gh release create v0.9 dist/* --title "Release v0.9" --notes "First beta release of Janus: Enterprise-grade MCP API Gateway & Portal."
 echo "Release v0.9 created successfully."

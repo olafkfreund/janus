@@ -2,9 +2,9 @@
 layout: default
 ---
 
-# Welcome to The Black Hole
+# Welcome to Janus
 
-**The Black Hole** is an enterprise-grade, high-performance **Model Context Protocol (MCP) API Gateway and Web Portal** designed specifically for secure, regulated, and air-gapped systems. 
+**Janus** is an enterprise-grade, high-performance **Model Context Protocol (MCP) API Gateway and Web Portal** designed specifically for secure, regulated, and air-gapped systems. 
 
 It acts as a secure, transparent reverse proxy that dynamically translates legacy REST/HTTP endpoints into standardized MCP tools that LLM clients (such as Claude, Antigravity, or Copilot) can query in real time.
 
@@ -96,7 +96,7 @@ graph TD
         CLI["Admin CLI Client"]:::client
     end
 
-    subgraph TheBlackHole ["The Black Hole (MCP Gateway Core)"]
+    subgraph Janus ["Janus (MCP Gateway Core)"]
         direction TB
         Auth{"Auth Filter Middleware"}:::gateway
         Router{"Router/Dispatcher"}:::gateway
@@ -195,7 +195,7 @@ sequenceDiagram
 
 ## Installation Guide
 
-"The Black Hole" is packaged as a single compiled Go binary requiring no external runtime dependencies (other than its local SQLite database file).
+"Janus" is packaged as a single compiled Go binary requiring no external runtime dependencies (other than its local SQLite database file).
 
 ### 1. Build and Install Locally
 

@@ -1,6 +1,6 @@
 # Customer Technical Environment Integration Analysis
 
-This document outlines how the **MCP API Gateway & Portal** (codenamed "The Black Hole") integrates, connects, and operates within the Customer-built technical environment:
+This document outlines how the **MCP API Gateway & Portal** (codenamed "Janus") integrates, connects, and operates within the Customer-built technical environment:
 *   **Hosting**: AWS
 *   **Runtime**: Amazon EKS (API + MCP server, Concorde Data Platform), container images in Amazon ECR, LCH Group Portal integration.
 *   **Data/AI Services**: AWS S3, Concorde data platform (Snowflake).

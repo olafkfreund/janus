@@ -97,7 +97,7 @@ graph TD
         CLI["Admin CLI Client"]:::client
     end
 
-    subgraph TheBlackHole ["The Black Hole (MCP Gateway Core)"]
+    subgraph Janus ["Janus (MCP Gateway Core)"]
         direction TB
         Auth{"Auth Filter Middleware"}:::gateway
         Router{"Router/Dispatcher"}:::gateway

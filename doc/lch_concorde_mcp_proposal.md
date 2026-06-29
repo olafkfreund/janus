@@ -20,7 +20,7 @@ This results in a fragmented, inefficient experience, where effort is spent in g
   Clearing Data Store ──> File Gen Engine ──> SFTP Server ──> Member Ingestion (Failures, T+1 Stale)
 
 [ Evolved Model ]
-  Clearing Data Store ──> Governed REST API ──> MCP Facade (The Black Hole) ──> Member AI / Copilots (Real-Time)
+  Clearing Data Store ──> Governed REST API ──> MCP Facade (Janus) ──> Member AI / Copilots (Real-Time)
 ```
 
 ---
@@ -92,7 +92,7 @@ graph TD
         CLI[Admin CLI Utility]:::client
     end
 
-    subgraph Facade Layer ["Controlled Intelligence Layer (The Black Hole)"]
+    subgraph Facade Layer ["Controlled Intelligence Layer (Janus)"]
         direction TB
         Auth{"Auth & mTLS Validator"}:::gateway
         Router{"Namespace Router"}:::gateway
