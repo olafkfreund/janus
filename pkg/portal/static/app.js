@@ -1,5 +1,17 @@
 // MCP API Gateway - Portal Frontend Logic
 
+// Global fetch interceptor to handle expired sessions (e.g. on server restart)
+const originalFetch = window.fetch;
+window.fetch = async function(...args) {
+    const res = await originalFetch(...args);
+    if (res.status === 401 && !args[0].includes('/api/auth/login')) {
+        localStorage.removeItem('mcp_gateway_token');
+        localStorage.removeItem('mcp_gateway_username');
+        window.location.reload();
+    }
+    return res;
+};
+
 const STATE = {
     token: localStorage.getItem('mcp_gateway_token') || '',
     username: localStorage.getItem('mcp_gateway_username') || '',
