@@ -440,14 +440,10 @@ async function loadOpenAPIDocs() {
     if (!block) return;
     block.innerText = 'Resolving active routes documentation...';
 
-    // Set token dynamically to navigation links so user doesn't hit a 401 when navigating to Swagger or Raw JSON view
+    // Set token dynamically to navigation links so user doesn't hit a 401 when navigating to Swagger view
     const swaggerBtn = document.getElementById('btn-interactive-swagger');
     if (swaggerBtn) {
         swaggerBtn.href = `/swagger.html?token=${encodeURIComponent(STATE.token)}`;
-    }
-    const rawBtn = document.getElementById('btn-raw-openapi');
-    if (rawBtn) {
-        rawBtn.href = `/api/openapi.json?token=${encodeURIComponent(STATE.token)}`;
     }
 
     try {
@@ -793,6 +789,48 @@ document.getElementById('btn-new-token').onclick = () => openTokenModal();
 document.getElementById('btn-close-conn-modal').onclick = () => document.getElementById('connection-modal').classList.add('hidden');
 document.getElementById('btn-close-ep-modal').onclick = () => document.getElementById('endpoint-modal').classList.add('hidden');
 document.getElementById('btn-close-token-modal').onclick = () => document.getElementById('token-modal').classList.add('hidden');
+
+// Schema Modal Controls
+document.getElementById('btn-show-schema').onclick = () => document.getElementById('schema-modal').classList.remove('hidden');
+document.getElementById('btn-card-show-schema').onclick = () => document.getElementById('schema-modal').classList.remove('hidden');
+document.getElementById('btn-close-schema-modal').onclick = () => document.getElementById('schema-modal').classList.add('hidden');
+document.getElementById('btn-modal-close-schema').onclick = () => document.getElementById('schema-modal').classList.add('hidden');
+
+// Copy JSON to Clipboard
+document.getElementById('btn-modal-copy-schema').onclick = () => {
+    const code = document.getElementById('openapi-code-block').innerText;
+    navigator.clipboard.writeText(code).then(() => {
+        showToast('OpenAPI JSON copied to clipboard');
+    }).catch(err => {
+        showToast('Failed to copy text', 'error');
+    });
+};
+
+// Download JSON Spec
+const triggerDownload = () => {
+    const code = document.getElementById('openapi-code-block').innerText;
+    if (code.startsWith('Error:') || code.startsWith('Resolving') || code.startsWith('Loading')) {
+        showToast('Schema not fully loaded yet', 'error');
+        return;
+    }
+    const blob = new Blob([code], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'openapi.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('OpenAPI schema download started');
+};
+
+document.getElementById('btn-download-openapi').onclick = (e) => {
+    e.preventDefault();
+    triggerDownload();
+};
+document.getElementById('btn-card-download-schema').onclick = () => triggerDownload();
+document.getElementById('btn-modal-download-schema').onclick = () => triggerDownload();
 
 // OpenTelemetry Dashboard Rendering
 async function loadTelemetry() {

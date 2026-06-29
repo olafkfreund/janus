@@ -612,6 +612,11 @@ tr:hover td {
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
 }
 
+.modal-content.large {
+    max-width: 900px;
+    width: 90%;
+}
+
 .modal-actions {
     display: flex;
     justify-content: flex-end;
