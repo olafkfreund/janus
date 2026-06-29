@@ -53,8 +53,8 @@
                 <a href="#endpoints" class="nav-item" id="nav-endpoints">
                     <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg> MCP Tools
                 </a>
-                <a href="#openapi" class="nav-item" id="nav-openapi">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg> API Docs
+                <a href="#help" class="nav-item" id="nav-help">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg> Help & Docs
                 </a>
                 <a href="#tokens" class="nav-item" id="nav-tokens">
                     <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="16" y1="2" x2="16" y2="4"></line><line x1="8" y1="2" x2="8" y2="4"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg> Client Tokens
@@ -367,36 +367,176 @@
                             </div>
                         </div>
                     </div>
+                    <!-- Moved OpenAPI Docs here -->
+                    <div style="border-top: 1px solid var(--border-color); margin-top: 2.5rem; padding-top: 2.5rem;">
+                        <div class="flex-justify">
+                            <h2>Consolidated OpenAPI Documentation</h2>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <a href="/swagger.html" target="_blank" class="btn-secondary" id="btn-interactive-swagger" style="width: auto;">Interactive Swagger UI</a>
+                                <button type="button" class="btn-primary" id="btn-show-schema" style="width: auto;">View Unified Schema</button>
+                                <a href="#" class="btn-secondary" id="btn-download-openapi" style="width: auto;">Download Schema JSON</a>
+                            </div>
+                        </div>
+                        <p class="text-muted mt-2">This is a consolidated OpenAPI 3.0 specification generated dynamically from all active connections and endpoints. It outlines the full schema, routes, parameters, and access scopes.</p>
+                        
+                        <div class="card glass mt-4" style="padding: 2.5rem; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 250px;">
+                            <div style="background: rgba(131, 165, 152, 0.1); border-radius: 50%; width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; margin-bottom: 1.5rem;">
+                                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--primary-color)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                                    <polyline points="14 2 14 8 20 8"></polyline>
+                                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                                    <polyline points="10 9 9 9 8 9"></polyline>
+                                </svg>
+                            </div>
+                            <h3 style="margin-bottom: 0.5rem;">Unified Swagger Schema Document</h3>
+                            <p class="text-muted" style="max-width: 500px; margin-bottom: 1.5rem;">The dynamically aggregated schema provides a single, unified interface for all registered APIs. Open the popout overlay or download the static JSON spec file to integrate with external systems.</p>
+                            <div style="display: flex; gap: 1rem;">
+                                <button type="button" class="btn-primary" id="btn-card-show-schema" style="width: auto;">Open Schema Popout</button>
+                                <button type="button" class="btn-secondary" id="btn-card-download-schema" style="width: auto;">Download Spec (.json)</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </section>
 
-            <!-- OpenAPI Docs View -->
-            <section id="view-openapi" class="content-section hidden">
-                <div class="flex-justify">
-                    <h2>Consolidated OpenAPI Documentation</h2>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <a href="/swagger.html" target="_blank" class="btn-secondary" id="btn-interactive-swagger" style="width: auto;">Interactive Swagger UI</a>
-                        <button type="button" class="btn-primary" id="btn-show-schema" style="width: auto;">View Unified Schema</button>
-                        <a href="#" class="btn-secondary" id="btn-download-openapi" style="width: auto;">Download Schema JSON</a>
+            <!-- Help & Docs View -->
+            <section id="view-help" class="content-section hidden">
+                <div class="flex-justify" style="align-items: center; gap: 1.5rem; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 250px;">
+                        <h2>Help & Technical Documentation</h2>
+                        <p class="text-muted mt-1">Detailed technical guidance on how to configure, manage, and use the MCP API Gateway and Portal.</p>
                     </div>
-                </div>
-                <p class="text-muted mt-2">This is a consolidated OpenAPI 3.0 specification generated dynamically from all active connections and endpoints. It outlines the full schema, routes, parameters, and access scopes.</p>
-                
-                <div class="card glass mt-4" style="padding: 2.5rem; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 250px;">
-                    <div style="background: rgba(131, 165, 152, 0.1); border-radius: 50%; width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; margin-bottom: 1.5rem;">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--primary-color)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                            <polyline points="14 2 14 8 20 8"></polyline>
-                            <line x1="16" y1="13" x2="8" y2="13"></line>
-                            <line x1="16" y1="17" x2="8" y2="17"></line>
-                            <polyline points="10 9 9 9 8 9"></polyline>
+                    <div style="position: relative; width: 320px;">
+                        <input type="text" id="docs-search-input" placeholder="Search documentation..." style="padding-left: 2.75rem; width: 100%; height: 44px; border-radius: 8px; border: 1px solid var(--border-color); background: hsla(220,15%,10%,0.5); color: var(--text-primary); outline: none;">
+                        <svg viewBox="0 0 24 24" width="16" height="16" stroke="var(--text-secondary)" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 0.95rem; top: 50%; transform: translateY(-50%); pointer-events: none; opacity: 0.7;">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                         </svg>
                     </div>
-                    <h3 style="margin-bottom: 0.5rem;">Unified Swagger Schema Document</h3>
-                    <p class="text-muted" style="max-width: 500px; margin-bottom: 1.5rem;">The dynamically aggregated schema provides a single, unified interface for all registered APIs. Open the popout overlay or download the static JSON spec file to integrate with external systems.</p>
-                    <div style="display: flex; gap: 1rem;">
-                        <button type="button" class="btn-primary" id="btn-card-show-schema" style="width: auto;">Open Schema Popout</button>
-                        <button type="button" class="btn-secondary" id="btn-card-download-schema" style="width: auto;">Download Spec (.json)</button>
+                </div>
+
+                <div class="mt-6" id="docs-container" style="display: flex; flex-direction: column; gap: 1.5rem;">
+                    <!-- Section 1 -->
+                    <div class="card glass docs-section" data-keywords="configure environment variables port database path postgresql vault provider jwt tls mtls sso auth database_url database_path jwt_secret gateway_token">
+                        <h3>1. Portal & Gateway Configuration</h3>
+                        <p class="text-muted mt-2">Configure the gateway binary or container using standard environment variables. Key parameters include:</p>
+                        <div class="table-container mt-4">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Environment Variable</th>
+                                        <th>Default Value</th>
+                                        <th>Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><code>PORT</code></td>
+                                        <td><code>8899</code></td>
+                                        <td>Port where the Web Portal and SSE endpoint listen.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>DATABASE_PATH</code></td>
+                                        <td><code>./mcp-gateway.db</code></td>
+                                        <td>Local SQLite database file path.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>DATABASE_URL</code></td>
+                                        <td>-</td>
+                                        <td>PostgreSQL connection URI (ex: <code>postgres://user:pass@host:5432/db</code>). Overrides SQLite when set.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>VAULT_PROVIDER</code></td>
+                                        <td><code>local</code></td>
+                                        <td>The credentials vault driver (<code>local</code>, <code>aws</code>, <code>gcp</code>, <code>azure</code>).</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>VAULT_LOCAL_PATH</code></td>
+                                        <td><code>./secrets.json</code></td>
+                                        <td>JSON vault storage file when using the <code>local</code> provider.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>TLS_CERT_PATH</code> / <code>TLS_KEY_PATH</code></td>
+                                        <td>-</td>
+                                        <td>SSL/TLS cert and key paths to run the portal over HTTPS.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><code>CLIENT_CA_PATH</code></td>
+                                        <td>-</td>
+                                        <td>CA certificate root path to enable <strong>Mutual TLS (mTLS)</strong> for clients.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Section 2 -->
+                    <div class="card glass docs-section" data-keywords="manage connections endpoints namespaces tool prefix json schema parameters post query routing tools edit delete">
+                        <h3>2. Managing Connections & MCP Tools</h3>
+                        <p class="text-muted mt-2">Link target REST microservices to the LLM agent using these steps:</p>
+                        <ul style="padding-left: 1.5rem; margin-top: 0.5rem; line-height: 1.6; color: var(--text-secondary);">
+                            <li><strong>API Connections</strong>: Register target base URLs. Assign a <em>Namespace Prefix</em> (e.g. <code>stripe_</code>) to isolate tool names and prevent conflicts across teams.</li>
+                            <li><strong>MCP Tools</strong>: Expose routes (e.g., <code>/v1/invoices/{{id}}</code>). Map path and request parameters using <strong>JSON Schema Templates</strong>. The gateway translates these definitions into standard MCP schemas dynamically.</li>
+                            <li><strong>Secrets Binding</strong>: Map <code>Auth Secret Ref</code> to a Vault path (e.g. <code>prod/stripe/key</code>) to inject credentials dynamically without hardcoding.</li>
+                        </ul>
+                    </div>
+
+                    <!-- Section 3 -->
+                    <div class="card glass docs-section" data-keywords="use client claude desktop desktop_config.json stdio sse python sdk antigravity gemini copilot codex tools call messages">
+                        <h3>3. Integrating with AI Clients</h3>
+                        <p class="text-muted mt-2">Connect your local AI assistant to the gateway via one of these client integrations:</p>
+                        
+                        <h4 class="mt-4" style="color: var(--text-primary);">A. Claude Desktop (Stdio)</h4>
+                        <p class="text-muted mt-1">Add the gateway connection settings to your local <code>claude_desktop_config.json</code>:</p>
+                        <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(120, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
+{
+  "mcpServers": {
+    "api-gateway": {
+      "command": "/path/to/mcp-gateway",
+      "args": ["-stdio"],
+      "env": {
+        "DATABASE_PATH": "/path/to/mcp-gateway.db",
+        "MCP_GATEWAY_TOKEN": "your-issued-bearer-token"
+      }
+    }
+  }
+}</pre>
+
+                        <h4 class="mt-4" style="color: var(--text-primary);">B. Antigravity / Gemini SDK (SSE)</h4>
+                        <p class="text-muted mt-1">Configure your python agents to connect to the Server-Sent Events endpoint:</p>
+                        <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(120, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
+from antigravity_sdk import Agent, ToolRegistry
+
+registry = ToolRegistry.from_mcp_sse(
+    url="http://localhost:8899/sse",
+    headers={"Authorization": "Bearer your-issued-bearer-token"}
+)
+
+agent = Agent(
+    name="System Assistant",
+    tools=registry.list_tools()
+)</pre>
+                    </div>
+
+                    <!-- Section 4 -->
+                    <div class="card glass docs-section" data-keywords="cli mcp-cli login verify CRUD metrics logs vault status add modify delete connection endpoint">
+                        <h3>4. Administrative CLI Usage (mcp-cli)</h3>
+                        <p class="text-muted mt-2">Use the compiled <code>mcp-cli</code> binary to manage configurations and run diagnostics remotely:</p>
+                        <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(200, 80%, 75%); margin-top: 0.5rem; overflow-x: auto; line-height: 1.5;">
+# Login and save session token
+mcp-cli login admin --addr http://localhost:8899
+
+# Run connection diagnostic checks
+mcp-cli verify
+
+# Monitor performance stats and raw Prometheus metrics
+mcp-cli status
+mcp-cli metrics
+
+# Manage secret mappings in the Vault
+mcp-cli vault set --key prod/billing/api-key --val "Bearer xoxb-..."
+mcp-cli vault list</pre>
                     </div>
                 </div>
             </section>

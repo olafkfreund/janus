@@ -92,8 +92,8 @@ function setupRouter() {
     const handleRoute = () => {
         let route = window.location.hash || '#dashboard';
         
-        // Redirect legacy vault hash route to settings page
-        if (route === '#vault') {
+        // Redirect legacy vault and openapi hash routes to settings page
+        if (route === '#vault' || route === '#openapi') {
             window.location.hash = '#settings';
             return;
         }
@@ -125,13 +125,13 @@ function setupRouter() {
         if (route === '#dashboard') loadDashboardStats();
         if (route === '#connections') loadConnections();
         if (route === '#endpoints') loadEndpoints();
-        if (route === '#openapi') loadOpenAPIDocs();
         if (route === '#tokens') loadClientTokens();
         if (route === '#telemetry') loadTelemetry();
         if (route === '#logs') loadAuditLogs();
         if (route === '#settings') {
             loadSettingsConfig();
             loadVaultSecrets();
+            loadOpenAPIDocs();
         }
     };
 
@@ -1060,6 +1060,24 @@ function escapeHtml(text) {
         "'": '&#039;'
     };
     return text.replace(/[&<>"']/g, function(m) { return map[m]; });
+}
+
+// Searchable Help & Docs logic
+const searchInput = document.getElementById('docs-search-input');
+if (searchInput) {
+    searchInput.oninput = (e) => {
+        const query = e.target.value.toLowerCase().trim();
+        document.querySelectorAll('.docs-section').forEach(section => {
+            const title = section.querySelector('h3').innerText.toLowerCase();
+            const text = section.innerText.toLowerCase();
+            const keywords = section.dataset.keywords ? section.dataset.keywords.toLowerCase() : '';
+            if (title.includes(query) || text.includes(query) || keywords.includes(query)) {
+                section.classList.remove('hidden');
+            } else {
+                section.classList.add('hidden');
+            }
+        });
+    };
 }
 
 // Boot strap app
