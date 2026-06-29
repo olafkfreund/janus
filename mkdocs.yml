@@ -6,7 +6,7 @@ docs_dir: .
 nav:
   - Welcome & Quick Start: README.md
   - Architecture Proposal: lch_concorde_mcp_proposal.md
-  - LSEG Environment Integration: lseg_environment_integration.md
+  - Customer Environment Integration: customer_environment_integration.md
   - Rollout & Demo Guide: demo_and_rollout_guide.md
 
 theme:

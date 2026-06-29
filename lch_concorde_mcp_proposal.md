@@ -67,7 +67,7 @@ Analysis and design of APIs for collateral services and integration with MCP ser
 
 ### Service Location
 *   **London-Led Delivery**: Core engineering, architecture, and governance operations are led from London, with remote delivery support as required.
-*   **LSEG Governance Compliance**: Supplier resources must work with LSEG on secure environments (bastion hosts, secure workstations) and strictly follow LSEG change control and governance processes.
+*   **Customer Governance Compliance**: Supplier resources must work with Customer on secure environments (bastion hosts, secure workstations) and strictly follow Customer change control and governance processes.
 
 ### Completion Criteria
 *   End users send requests to the MCP, which then invokes the underlying APIs to retrieve LCH Ltd collateral data, successfully returning formatted answers.
@@ -173,7 +173,7 @@ sequenceDiagram
 
 ### ADR 01: Compiled Go Backend Core
 *   **Decision**: Implement the Gateway and CLI utility in Go.
-*   **Rationale**: Go compiles into a single static binary with zero external runtime package dependencies. This is critical for air-gapped zones in LSEG where downloading packages at runtime is blocked. Go's native support for HTTP/TLS 1.3 and goroutine-based concurrency ensures low-latency routing under peak clearing loads.
+*   **Rationale**: Go compiles into a single static binary with zero external runtime package dependencies. This is critical for air-gapped zones in Customer where downloading packages at runtime is blocked. Go's native support for HTTP/TLS 1.3 and goroutine-based concurrency ensures low-latency routing under peak clearing loads.
 
 ### ADR 02: REST API Wrapper vs Direct DB Access
 *   **Decision**: Wrap data retrieval strictly in REST APIs; do not permit direct SQL database queries by the MCP server.

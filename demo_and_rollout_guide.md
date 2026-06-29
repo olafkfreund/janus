@@ -73,18 +73,18 @@ To demonstrate the API-to-MCP translation flow to architects and engineers witho
 To onboard hundreds of LCH Group developers and clearing members securely and efficiently, use a **Hybrid Deployment Model**:
 
 ### Web Portal Integration (SSE)
-*   Deploy a cluster of gateway containers to LSEG's EKS.
+*   Deploy a cluster of gateway containers to Customer's EKS.
 *   Enforce **mTLS (Mutual TLS)** for all incoming connections.
 *   Configure the gateway to authenticate developers via **OIDC (Okta/Active Directory)**.
 *   Developers query tools over the central gateway URL via SSE (`/sse` endpoint). The database and vaults are stored in RDS and AWS Secrets Manager, eliminating local files.
 
 ### Desktop Distribution (Stdio Configuration Script)
 *   For developers running local IDE tools (Claude Desktop, VS Code Copilot extensions, Codex wrappers):
-*   Provide a centralized setup script in LSEG's developer portal (DX1) that compiles the binary (or pulls the container image) and updates the local user configuration folder automatically:
+*   Provide a centralized setup script in Customer's developer portal (DX1) that compiles the binary (or pulls the container image) and updates the local user configuration folder automatically:
 ```bash
 #!/usr/bin/env bash
 # Central developer setup template
-curl -fsSL https://dx1.lseg.internal/mcp/install.sh | sh
+curl -fsSL https://dx1.customer.internal/mcp/install.sh | sh
 # Updates Claude config to inject the correct local binary path and issued OIDC token
 ```
 
