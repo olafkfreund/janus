@@ -496,6 +496,16 @@
                 </div>
 
                 <div class="mt-6" id="docs-container" style="display: flex; flex-direction: column; gap: 1.5rem;">
+                    <!-- Portal Overview -->
+                    <div class="card glass docs-section" data-keywords="overview dashboard console gateway main interface tour stats">
+                        <h3>Portal Dashboard Console Overview</h3>
+                        <p class="text-muted mt-2">The Web Portal console provides a centralized, secure control plane for checking component health, monitoring API traffic, managing client permissions, and tracking downstream connection telemetry.</p>
+                        <div class="docs-screenshot-container">
+                            <img src="/assets/portal_dashboard.png" alt="Web Portal Dashboard Console" class="docs-screenshot" />
+                            <div class="docs-screenshot-caption">Figure 0.1: Gateway Administration Dashboard console.</div>
+                        </div>
+                    </div>
+
                     <!-- Section 1 -->
                     <div class="card glass docs-section" data-keywords="configure environment variables port database path postgresql vault provider jwt tls mtls sso auth database_url database_path jwt_secret gateway_token">
                         <h3>1. Portal & Gateway Configuration</h3>
@@ -548,6 +558,16 @@
                                 </tbody>
                             </table>
                         </div>
+                        <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+                            <div>
+                                <img src="/assets/portal_settings_vault.png" alt="Credentials Vault Config" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 1.1: Local credentials vault and security settings interface in the portal.</div>
+                            </div>
+                            <div>
+                                <img src="/assets/portal_settings_vault_proxy.png" alt="Vault Proxy Settings" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 1.2: Vault proxy credential mappings and provider scopes.</div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Section 2 -->
@@ -559,6 +579,26 @@
                             <li><strong>MCP Tools</strong>: Expose routes (e.g., <code>/v1/invoices/{{id}}</code>). Map path and request parameters using <strong>JSON Schema Templates</strong>. The gateway translates these definitions into standard MCP schemas dynamically.</li>
                             <li><strong>Secrets Binding</strong>: Map <code>Auth Secret Ref</code> to a Vault path (e.g. <code>prod/stripe/key</code>) to inject credentials dynamically without hardcoding.</li>
                         </ul>
+                        <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem;">
+                            <div>
+                                <img src="/assets/portal_connections.png" alt="API Connections List" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 2.1: Gateway API Connections list representing registered backend APIs.</div>
+                            </div>
+                            <div>
+                                <img src="/assets/portal_connection_modal.png" alt="Connection Config Dialog" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 2.2: Creating and configuring a target connection with prefix, base URL and credentials vault references.</div>
+                            </div>
+                        </div>
+                        <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1rem;">
+                            <div>
+                                <img src="/assets/portal_mcp_tools.png" alt="MCP Tool Mappings List" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 2.3: Configured MCP tool mappings and dynamic routes.</div>
+                            </div>
+                            <div>
+                                <img src="/assets/portal_mcp_tool_modal.png" alt="MCP Tool Details and JSON Schema" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 2.4: Editing an MCP tool dynamic path, parameters and JSON Schema templates.</div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Section 3 -->
@@ -581,7 +621,7 @@
     }
   }
 }</pre>
-
+ 
                         <h4 class="mt-4" style="color: var(--text-primary);">B. Antigravity / Gemini SDK (SSE)</h4>
                         <p class="text-muted mt-1">Configure your python agents to connect to the Server-Sent Events endpoint:</p>
                         <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(120, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
@@ -596,11 +636,32 @@ agent = Agent(
     name="System Assistant",
     tools=registry.list_tools()
 )</pre>
+
+                        <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem;">
+                            <div>
+                                <img src="/assets/portal_client_tokens.png" alt="Client Tokens List" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 3.1: Issued bearer tokens for client application authentication.</div>
+                            </div>
+                            <div>
+                                <img src="/assets/portal_client_token_modal.png" alt="Generate Token Dialog" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 3.2: Issuing a new client token with specific tool namespace scopes.</div>
+                            </div>
+                        </div>
+                        <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1rem;">
+                            <div>
+                                <img src="/assets/portal_docs_integration_guide.png" alt="Integration Guide Embedded docs" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 3.3: Interactive client integration instructions inside the gateway portal.</div>
+                            </div>
+                            <div>
+                                <img src="/assets/portal_docs_gateway_guide.png" alt="Gateway Guide Embedded docs" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 3.4: Administrative and architectural guides available inside the portal.</div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Section 4 -->
-                    <div class="card glass docs-section" data-keywords="cli mcp-cli login verify CRUD metrics logs vault status add modify delete connection endpoint">
-                        <h3>4. Administrative CLI Usage (mcp-cli)</h3>
+                    <div class="card glass docs-section" data-keywords="cli mcp-cli login verify CRUD metrics logs vault status add modify delete connection endpoint telemetry">
+                        <h3>4. Administrative CLI Usage (mcp-cli) & Monitoring</h3>
                         <p class="text-muted mt-2">Use the compiled <code>mcp-cli</code> binary to manage configurations and run diagnostics remotely:</p>
                         <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(200, 80%, 75%); margin-top: 0.5rem; overflow-x: auto; line-height: 1.5;">
 # Login and save session token
@@ -616,6 +677,38 @@ mcp-cli metrics
 # Manage secret mappings in the Vault
 mcp-cli vault set --key prod/billing/api-key --val "Bearer xoxb-..."
 mcp-cli vault list</pre>
+                        <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem;">
+                            <div>
+                                <img src="/assets/portal_telemetry.png" alt="Operational Telemetry" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 4.1: Real-time traffic, latency, and database storage telemetry metrics.</div>
+                            </div>
+                            <div>
+                                <img src="/assets/portal_audit_logs.png" alt="Historical Audit Logs" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 4.2: Historical audit trace table capturing tool calls and security actions.</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Section 5 -->
+                    <div class="card glass docs-section" data-keywords="openapi swagger schema api doc query interactive browser explorer spec">
+                        <h3>5. Interactive OpenAPI & Swagger Documentation</h3>
+                        <p class="text-muted mt-2">The gateway automatically aggregates all dynamic MCP tool routes into a single valid OpenAPI/Swagger schema. This allows external tools, developers, and LLMs to inspect the full available API surface.</p>
+                        <p class="text-muted mt-1">Access the live Swagger UI from the Dashboard or by opening `/swagger.html` in your browser. You can copy the schema directly from the modal or download the JSON spec.</p>
+                        
+                        <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem;">
+                            <div>
+                                <img src="/assets/portal_openapi_ref.png" alt="OpenAPI Schema Dialog" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 5.1: Unified OpenAPI JSON document preview modal.</div>
+                            </div>
+                            <div>
+                                <img src="/assets/portal_swagger_ui_top.png" alt="Swagger UI Top" class="docs-screenshot" />
+                                <div class="docs-screenshot-caption">Figure 5.2: Interactive Swagger UI showing aggregated gateway endpoints.</div>
+                            </div>
+                        </div>
+                        <div class="docs-screenshot-container" style="margin-top: 1rem;">
+                            <img src="/assets/portal_swagger_ui_bottom.png" alt="Swagger UI Bottom" class="docs-screenshot" style="max-height: 400px; object-fit: cover; object-position: top; width: 100%;" />
+                            <div class="docs-screenshot-caption">Figure 5.3: Swagger UI endpoints and schemas overview.</div>
+                        </div>
                     </div>
                 </div>
             </section>

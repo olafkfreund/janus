@@ -13,6 +13,73 @@ An enterprise-grade, high-performance API Gateway and Web Portal that translates
 
 ---
 
+## Web Portal Walkthrough
+
+The Janus Web Portal is a premium, secure single-page application built directly into the gateway binary, running locally in a modern dark-mode aesthetic. Here is a visual showcase of the interface:
+
+### 1. Dashboard Overview & Real-Time Telemetry
+The main dashboard displays high-level operations metrics, component health diagnostics, request volume counters, and a chronological history of client access tokens.
+
+| Dashboard Console | System Telemetry |
+| :---: | :---: |
+| ![Dashboard Console](doc/assets/portal_dashboard.png) | ![System Telemetry](doc/assets/portal_telemetry.png) |
+| *Figure 1: Central gateway monitoring dashboard console.* | *Figure 2: Real-time traffic throughput and database telemetry metrics.* |
+
+---
+
+### 2. Managing Target Connections & MCP Tools
+Administrators can register downstream REST targets, isolate them with custom tool prefixes, assign secure credentials from the vault, and map resource routes to MCP schema parameters.
+
+| API Connections | Create Connection |
+| :---: | :---: |
+| ![API Connections](doc/assets/portal_connections.png) | ![Create Connection](doc/assets/portal_connection_modal.png) |
+| *Figure 3: Registered API connection configurations list.* | *Figure 4: Connection creation form with namespace prefix setup.* |
+
+| MCP Tool Mappings | Configure Dynamic Tool |
+| :---: | :---: |
+| ![MCP Tool Mappings](doc/assets/portal_mcp_tools.png) | ![Configure Dynamic Tool](doc/assets/portal_mcp_tool_modal.png) |
+| *Figure 5: Gateway MCP dynamic tool endpoints.* | *Figure 6: Mapping dynamic paths and request body JSON schemas.* |
+
+---
+
+### 3. Security Vaults & Token Scoping
+Manage credential stores and issue authorization bearer tokens for LLM clients (Claude, Antigravity, etc.) restricted to specific connection scopes.
+
+| Pluggable Vaults | Scoped Client Tokens |
+| :---: | :---: |
+| ![Pluggable Vaults](doc/assets/portal_settings_vault.png) | ![Scoped Client Tokens](doc/assets/portal_client_tokens.png) |
+| *Figure 7: Vault providers and secret references settings.* | *Figure 8: Issued bearer client tokens list.* |
+
+| Configure Vault Proxy | Issue Client Token |
+| :---: | :---: |
+| ![Configure Vault Proxy](doc/assets/portal_settings_vault_proxy.png) | ![Issue Client Token](doc/assets/portal_client_token_modal.png) |
+| *Figure 9: Setting credential mapping endpoints.* | *Figure 10: Generating client tokens with restricted scope.* |
+
+---
+
+### 4. Interactive OpenAPI & Swagger Documentation
+The gateway automatically aggregates all dynamic tool endpoint parameters into a unified OpenAPI/Swagger schema, enabling interactive developer testing directly in the portal.
+
+| OpenAPI Schema Preview | Swagger UI Endpoints |
+| :---: | :---: |
+| ![OpenAPI Schema Preview](doc/assets/portal_openapi_ref.png) | ![Swagger UI Endpoints](doc/assets/portal_swagger_ui_top.png) |
+| *Figure 11: Real-time Swagger JSON spec modal.* | *Figure 12: Interactive Swagger UI explorer.* |
+
+![Swagger UI Details](doc/assets/portal_swagger_ui_bottom.png)
+*Figure 13: Live Swagger UI explorer for schema definitions and execution verification.*
+
+---
+
+### 5. Audit Logging & Built-in Guides
+A complete compliance audit trail records all tool executions and changes, accompanied by built-in interactive guides for quick onboarding.
+
+| Historical Audit Logs | Developer Guides |
+| :---: | :---: |
+| ![Historical Audit Logs](doc/assets/portal_audit_logs.png) | ![Developer Guides](doc/assets/portal_docs_integration_guide.png) |
+| *Figure 14: Historical compliance audit trail.* | *Figure 15: Embedded client integration instructions.* |
+
+---
+
 ## Technical Architecture
 
 ```mermaid
