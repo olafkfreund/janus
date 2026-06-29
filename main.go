@@ -128,10 +128,10 @@ func main() {
 	}()
 
 	if tlsConfig != nil {
-		log.Printf("MCP API Gateway starting securely on HTTPS port %s (mTLS enabled: %v)...", cfg.Port, cfg.ClientCAPath != "")
+		log.Printf("Janus API Gateway starting securely on HTTPS port %s (mTLS enabled: %v)...", cfg.Port, cfg.ClientCAPath != "")
 		err = server.ListenAndServeTLS("", "")
 	} else {
-		log.Printf("MCP API Gateway starting on HTTP port %s (Warning: Traffic unencrypted)...", cfg.Port)
+		log.Printf("Janus API Gateway starting on HTTP port %s (Warning: Traffic unencrypted)...", cfg.Port)
 		err = server.ListenAndServe()
 	}
 
@@ -146,7 +146,7 @@ func main() {
 // runCLI processes command-line subcommands for dynamic operations management
 func runCLI(db *storage.DB, vp vault.VaultProvider) {
 	if len(os.Args) < 3 {
-		fmt.Println("MCP API Gateway Configuration CLI")
+		fmt.Println("Janus API Gateway Configuration CLI")
 		fmt.Println("Usage: mcp-gateway cli <command> [options]")
 		fmt.Println("Commands:")
 		fmt.Println("  connection-add --name <name> --url <url> --auth <auth> [--secret <secret>] [--prefix <prefix>]")

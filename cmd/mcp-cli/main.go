@@ -362,8 +362,8 @@ func runStatus() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("MCP API Gateway Server Status:\n")
-	fmt.Printf("=============================\n")
+	fmt.Printf("Janus API Gateway Server Status:\n")
+	fmt.Printf("===============================\n")
 	fmt.Printf("Gateway URL:      %s\n", globalAddr)
 	fmt.Printf("Server Port:      %v\n", settings["port"])
 	fmt.Printf("Database Path:    %v\n", settings["database_path"])

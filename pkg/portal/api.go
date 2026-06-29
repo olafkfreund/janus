@@ -837,7 +837,7 @@ func (p *PortalServer) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	doc := map[string]interface{}{
 		"openapi": "3.0.0",
 		"info": map[string]interface{}{
-			"title":       "MCP API Gateway Consolidated Reference",
+			"title":       "Janus API Gateway Consolidated Reference",
 			"description": "Unified OpenAPI reference mapping all active connection endpoints exposed as MCP tools alongside Gateway administration APIs.",
 			"version":     "1.0.0",
 		},

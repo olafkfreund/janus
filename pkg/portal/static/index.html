@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MCP API Gateway Portal</title>
+    <title>Janus API Gateway Portal</title>
     <!-- Modern Premium Font -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,8 +14,22 @@
     <!-- Login Screen -->
     <div id="login-container" class="glass-panel">
         <div class="login-header">
-            <div class="logo-orb"></div>
-            <h1>MCP API Gateway</h1>
+            <svg class="janus-logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="50" cy="50" r="44" fill="url(#janus-grad)" opacity="0.15"/>
+                <circle cx="50" cy="50" r="44" stroke="url(#janus-grad)" stroke-width="2" opacity="0.8"/>
+                <path d="M46 22 C32 22, 22 34, 22 50 C22 66, 32 78, 46 78 C37 78, 30 67, 30 50 C30 33, 37 22, 46 22 Z" fill="currentColor"/>
+                <path d="M54 22 C68 22, 78 34, 78 50 C78 66, 68 78, 54 78 C63 78, 70 67, 70 50 C70 33, 63 22, 54 22 Z" fill="currentColor"/>
+                <line x1="50" y1="14" x2="50" y2="86" stroke="url(#janus-grad)" stroke-width="4" stroke-linecap="round"/>
+                <circle cx="50" cy="50" r="11" stroke="url(#janus-grad)" stroke-width="3" fill="var(--bg-main)"/>
+                <circle cx="50" cy="50" r="4" fill="currentColor"/>
+                <defs>
+                    <linearGradient id="janus-grad" x1="0" y1="0" x2="100" y2="100">
+                        <stop offset="0%" stop-color="hsl(263, 70%, 55%)"/>
+                        <stop offset="100%" stop-color="hsl(224, 85%, 50%)"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+            <h1>Janus API Gateway</h1>
             <p>Enterprise API Connector & Secure MCP Server</p>
         </div>
         <form id="login-form">
@@ -37,9 +51,23 @@
     <div id="app-shell" class="hidden">
         <aside class="sidebar">
             <div class="sidebar-header">
-                <div class="logo-orb"></div>
+                <svg class="janus-logo" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="50" cy="50" r="44" fill="url(#janus-grad-sidebar)" opacity="0.15"/>
+                    <circle cx="50" cy="50" r="44" stroke="url(#janus-grad-sidebar)" stroke-width="2" opacity="0.8"/>
+                    <path d="M46 22 C32 22, 22 34, 22 50 C22 66, 32 78, 46 78 C37 78, 30 67, 30 50 C30 33, 37 22, 46 22 Z" fill="currentColor"/>
+                    <path d="M54 22 C68 22, 78 34, 78 50 C78 66, 68 78, 54 78 C63 78, 70 67, 70 50 C70 33, 63 22, 54 22 Z" fill="currentColor"/>
+                    <line x1="50" y1="14" x2="50" y2="86" stroke="url(#janus-grad-sidebar)" stroke-width="4" stroke-linecap="round"/>
+                    <circle cx="50" cy="50" r="11" stroke="url(#janus-grad-sidebar)" stroke-width="3" fill="var(--bg-main)"/>
+                    <circle cx="50" cy="50" r="4" fill="currentColor"/>
+                    <defs>
+                        <linearGradient id="janus-grad-sidebar" x1="0" y1="0" x2="100" y2="100">
+                            <stop offset="0%" stop-color="hsl(263, 70%, 55%)"/>
+                            <stop offset="100%" stop-color="hsl(224, 85%, 50%)"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
                 <div>
-                    <h2>MCP Gateway</h2>
+                    <h2>Janus Gateway</h2>
                     <span class="badge">SECURE</span>
                 </div>
             </div>
