@@ -93,7 +93,7 @@ spec:
         - name: SECRET_CACHE_TTL
           value: "30s"
         - name: RESPONSE_CACHE_TTL
-          value: "0s"
+          value: "10s" # cache idempotent GET tool responses (per-pod, URL-keyed)
         - name: DOWNSTREAM_RETRIES
           value: "2"
         resources:
