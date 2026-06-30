@@ -53,8 +53,13 @@ func main() {
 		seedDatabase(context.Background(), db, cfg.Port)
 	}
 
-	// 4. Initialize Vault provider
-	vaultProvider, err := vault.InitVault(cfg.VaultProvider, cfg.VaultLocalPath)
+	// 4. Initialize Vault provider. The postgres vault encrypts secrets with
+	// VAULT_ENCRYPTION_KEY (falling back to JWT_SECRET) and shares them across replicas.
+	vaultKey := cfg.VaultEncryptionKey
+	if vaultKey == "" {
+		vaultKey = cfg.JWTSecret
+	}
+	vaultProvider, err := vault.InitVault(cfg.VaultProvider, cfg.VaultLocalPath, db.DB, vaultKey)
 	if err != nil {
 		log.Fatalf("Vault initialization failed: %v", err)
 	}

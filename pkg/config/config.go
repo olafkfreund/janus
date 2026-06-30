@@ -9,19 +9,20 @@ import (
 )
 
 type Config struct {
-	Port             string
-	DatabasePath     string
-	VaultProvider    string // 'local', 'aws', 'azure', 'gcp'
-	VaultLocalPath   string
-	JWTSecret        string
-	OIDCIssuer       string
-	OIDCClientID     string
-	OIDCClientSecret string
-	OIDCDefaultRole  string // Role granted to SSO-authenticated users (default 'admin')
-	GatewayToken     string // Secure token required by the LLM client
-	TLSCertPath      string
-	TLSKeyPath       string
-	ClientCAPath     string // For mTLS
+	Port               string
+	DatabasePath       string
+	VaultProvider      string // 'local', 'postgres', 'aws', 'azure', 'gcp'
+	VaultLocalPath     string
+	VaultEncryptionKey string // AES key source for the postgres vault (falls back to JWTSecret)
+	JWTSecret          string
+	OIDCIssuer         string
+	OIDCClientID       string
+	OIDCClientSecret   string
+	OIDCDefaultRole    string // Role granted to SSO-authenticated users (default 'admin')
+	GatewayToken       string // Secure token required by the LLM client
+	TLSCertPath        string
+	TLSKeyPath         string
+	ClientCAPath       string // For mTLS
 
 	// Bootstrap local admin credentials (local login is disabled when password is empty).
 	AdminUsername string
@@ -62,6 +63,7 @@ func LoadConfig() (*Config, error) {
 		DatabasePath:       dbURL,
 		VaultProvider:      getEnv("VAULT_PROVIDER", "local"),
 		VaultLocalPath:     getEnv("VAULT_LOCAL_PATH", "./secrets.json"),
+		VaultEncryptionKey: os.Getenv("VAULT_ENCRYPTION_KEY"),
 		JWTSecret:          os.Getenv("JWT_SECRET"),
 		OIDCIssuer:         getEnv("OIDC_ISSUER", ""),
 		OIDCClientID:       getEnv("OIDC_CLIENT_ID", ""),

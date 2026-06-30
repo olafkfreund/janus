@@ -64,13 +64,11 @@ spec:
             secretKeyRef:
               name: mcp-gateway-secrets
               key: database-url
-        # Local vault is per-pod/ephemeral on an emptyDir. The demo connections use
-        # auth_type=none, so no shared secret state is required. For downstream-auth
-        # at scale, switch to a shared vault backend.
+        # Shared, encrypted vault backed by the same Postgres (consistent across
+        # all replicas, survives restarts). Encryption key falls back to JWT_SECRET
+        # unless VAULT_ENCRYPTION_KEY is set.
         - name: VAULT_PROVIDER
-          value: "local"
-        - name: VAULT_LOCAL_PATH
-          value: "/app/data/secrets.json"
+          value: "postgres"
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:

@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -118,15 +119,19 @@ var errNotImplemented = fmt.Errorf("vault provider not implemented")
 
 // InitVault initializes the vault based on config selection.
 //
-// Cloud providers (aws/gcp/azure) are not yet implemented. Rather than returning
-// fake secret values, InitVault fails closed so the operator must supply a working
-// backend or explicitly use the local provider.
-func InitVault(provider, localPath string) (VaultProvider, error) {
+//   - local:    file-based, single-node/dev only (per-pod, not shared)
+//   - postgres: encrypted secrets in the shared DB — correct for multi-replica
+//   - aws/gcp/azure: not yet implemented (fails closed rather than returning fakes)
+//
+// db and encKey are used only by the postgres provider.
+func InitVault(provider, localPath string, db *sql.DB, encKey string) (VaultProvider, error) {
 	switch provider {
 	case "local":
 		return NewLocalVault(localPath)
+	case "postgres":
+		return NewPostgresVault(db, encKey)
 	case "aws", "gcp", "azure":
-		return nil, fmt.Errorf("%w: %q (use 'local' or implement this provider)", errNotImplemented, provider)
+		return nil, fmt.Errorf("%w: %q (use 'local'/'postgres' or implement this provider)", errNotImplemented, provider)
 	default:
 		return nil, fmt.Errorf("unknown vault provider: %s", provider)
 	}
