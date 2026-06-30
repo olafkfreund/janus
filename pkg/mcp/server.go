@@ -79,7 +79,17 @@ type Session struct {
 	ClientIdentity string
 	ClientRole     string
 	Scopes         []string
-	TokenHash      string // hash of the token presented at session creation
+	TokenHash      string     // hash of the token presented at session creation
+	writeMu        sync.Mutex // serializes writes to the SSE stream (keepalive + responses)
+}
+
+// writeEvent writes a raw SSE event to the stream, serialized so concurrent
+// keepalives and RPC responses never interleave.
+func (s *Session) writeEvent(event string) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	fmt.Fprint(s.SSEWriter, event)
+	s.Flusher.Flush()
 }
 
 type MCPServer struct {
@@ -271,10 +281,8 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}()
 
-	// Send endpoint configuration redirect event to client
-	// The client will use POST /messages?sessionId=sessionID to send RPC calls
-	fmt.Fprintf(w, "event: endpoint\ndata: /messages?sessionId=%s\n\n", sessionID)
-	flusher.Flush()
+	// Send endpoint event: tells the client where to POST JSON-RPC requests.
+	session.writeEvent(fmt.Sprintf("event: endpoint\ndata: /messages?sessionId=%s\n\n", sessionID))
 
 	// Keep connection alive
 	ticker := time.NewTicker(15 * time.Second)
@@ -285,8 +293,7 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		case <-session.Ctx.Done():
 			return
 		case <-ticker.C:
-			fmt.Fprintf(w, ": keepalive\n\n")
-			flusher.Flush()
+			session.writeEvent(": keepalive\n\n")
 		}
 	}
 }
@@ -338,9 +345,22 @@ func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// MCP HTTP+SSE transport: the POST only delivers the client's message. The
+	// response is pushed back over the SSE stream (not the POST body), and the
+	// POST returns 202 Accepted. Notifications (no id) get no response.
+	if req.ID == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	resp := s.handleRequest(r.Context(), session.ClientIdentity, session.ClientRole, session.Scopes, &req)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+	session.writeEvent(fmt.Sprintf("event: message\ndata: %s\n\n", payload))
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, clientRole string, clientScopes []string, req *JSONRPCRequest) *JSONRPCResponse {
