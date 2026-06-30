@@ -55,7 +55,10 @@ PROMPT="Using the janus-gateway MCP tools, fetch the non-cash collateral holding
 echo -e "${MAGENTA}Running: claude -p \"<collateral report prompt>\" --mcp-config .mcp.json --allowedTools \"mcp__janus-gateway\"${NC}"
 echo -e ""
 
-claude -p "$PROMPT" \
+# Use the claude.ai subscription, not ANTHROPIC_API_KEY: Claude Code prefers the
+# API key when it is set in the env, which can hit API usage limits. Unset it for
+# this invocation only (other tools that rely on the key are unaffected).
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN claude -p "$PROMPT" \
   --mcp-config .mcp.json \
   --allowedTools "mcp__janus-gateway"
 
