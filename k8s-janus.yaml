@@ -1,19 +1,12 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: janus
----
-# Secrets. Values MUST be >= 32 bytes (the gateway fails closed otherwise).
-# In production, source these from AWS Secrets Manager (External Secrets / CSI).
-apiVersion: v1
-kind: Secret
-metadata:
-  name: mcp-gateway-secrets
-  namespace: janus
-type: Opaque
-stringData:
-  jwt-secret: "change-me-to-a-long-random-string-min-32-bytes-xxxxx"
-  gateway-token: "change-me-to-a-long-random-bearer-token-min-32-bytes"
+# NOTE: the 'janus' Namespace and the 'mcp-gateway-secrets' Secret are managed
+# out-of-band (the Namespace is cluster-scoped; the Secret holds real credentials
+# that must not be overwritten by committed placeholders). The deploy role has
+# namespace-scoped EKS edit rights, so this manifest contains only the namespaced
+# workload resources. Bootstrap once:
+#   kubectl create namespace janus
+#   kubectl -n janus create secret generic mcp-gateway-secrets \
+#     --from-literal=jwt-secret="$(openssl rand -base64 48)" \
+#     --from-literal=gateway-token="$(openssl rand -base64 48)"
 ---
 # SQLite persistence for the single-node deployment. For horizontal scaling switch
 # to Postgres and use k8s/janus-scaled.yaml (RWO volumes cannot be shared by >1 pod).
