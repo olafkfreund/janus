@@ -81,6 +81,13 @@ spec:
             secretKeyRef:
               name: mcp-gateway-secrets
               key: gateway-token
+        # Local admin login (until SSO/OIDC is configured). Username defaults to
+        # "admin"; password comes from the secret. Remove once OIDC is set up.
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mcp-gateway-secrets
+              key: admin-password
         - name: SEED_DEMO_DATA
           value: "true"
         - name: EGRESS_ALLOW_PRIVATE
