@@ -1,0 +1,69 @@
+name: Deploy to AWS EKS (Synechron Profile)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-test:
+    name: Validate and Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Run Vet
+        run: go vet ./...
+
+      - name: Run Unit Tests
+        run: go test -v ./...
+
+  build-and-deploy:
+    name: Build, Push ECR & Deploy EKS
+    needs: validate-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'eu-west-2' }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Docker Image to ECR
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: janus
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG -t $REGISTRY/$REPOSITORY:latest .
+          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+          docker push $REGISTRY/$REPOSITORY:latest
+
+      - name: Update Kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME || 'sarc-aws' }} --region ${{ secrets.AWS_REGION || 'eu-west-2' }}
+
+      - name: Deploy to Kubernetes
+        run: |
+          # Use the specific commit tag for deployment to trigger a rolling update
+          sed -i "s|image: 796973489124.dkr.ecr.eu-west-2.amazonaws.com/janus:latest|image: ${{ steps.login-ecr.outputs.registry }}/janus:${{ github.sha }}|g" k8s-janus.yaml
+          kubectl apply -f k8s-janus.yaml
+          kubectl rollout status deployment/mcp-api-gateway -n janus
