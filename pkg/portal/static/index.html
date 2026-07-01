@@ -553,7 +553,7 @@
                                     <tr>
                                         <td><code>VAULT_PROVIDER</code></td>
                                         <td><code>local</code></td>
-                                        <td>The credentials vault driver (<code>local</code>, <code>aws</code>, <code>gcp</code>, <code>azure</code>).</td>
+                                        <td>Credentials vault driver. <code>local</code> (file, single-node), <code>postgres</code> (AES-256-GCM encrypted in the shared DB &mdash; use this for multi-replica). <code>aws</code>/<code>gcp</code>/<code>azure</code> fail closed until implemented.</td>
                                     </tr>
                                     <tr>
                                         <td><code>VAULT_LOCAL_PATH</code></td>
@@ -592,7 +592,8 @@
                         <ul style="padding-left: 1.5rem; margin-top: 0.5rem; line-height: 1.6; color: var(--text-secondary);">
                             <li><strong>API Connections</strong>: Register target base URLs. Assign a <em>Namespace Prefix</em> (e.g. <code>stripe_</code>) to isolate tool names and prevent conflicts across teams.</li>
                             <li><strong>MCP Tools</strong>: Expose routes (e.g., <code>/v1/invoices/{{id}}</code>). Map path and request parameters using <strong>JSON Schema Templates</strong>. The gateway translates these definitions into standard MCP schemas dynamically.</li>
-                            <li><strong>Secrets Binding</strong>: Map <code>Auth Secret Ref</code> to a Vault path (e.g. <code>prod/stripe/key</code>) to inject credentials dynamically without hardcoding.</li>
+                            <li><strong>Secrets Binding</strong>: A connection stores only a <em>reference</em> (<code>Auth Secret Ref</code>, e.g. <code>prod/stripe/key</code>), never the secret. Pick an <strong>Auth Type</strong> &mdash; <code>none</code>, <code>bearer</code>, <code>basic</code> (<code>user:pass</code>), or <code>custom_headers</code> (JSON header map) &mdash; and the gateway resolves the value from the Vault and injects it at call time. <strong>The LLM never sees downstream credentials.</strong> Rotate the secret in the Vault and every tool using it updates instantly.</li>
+                            <li><strong>Scoped Client Tokens</strong>: Issue per-client bearer tokens restricted to tool-name globs (e.g. <code>lch_*,ustreasury_*</code>) and a role. Tokens are hashed at rest and shown once at creation.</li>
                         </ul>
                         <div class="docs-screenshot-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem;">
                             <div>
@@ -617,12 +618,37 @@
                     </div>
 
                     <!-- Section 3 -->
-                    <div class="card glass docs-section" data-keywords="use client claude desktop desktop_config.json stdio sse python sdk antigravity gemini copilot codex tools call messages">
+                    <div class="card glass docs-section" data-keywords="use client claude code desktop desktop_config.json stdio sse streamable http mcp url type bearer python sdk antigravity gemini copilot codex tools call messages scoped token">
                         <h3>3. Integrating with AI Clients</h3>
-                        <p class="text-muted mt-2">Connect your local AI assistant to the gateway via one of these client integrations:</p>
+                        <p class="text-muted mt-2">Connect your AI assistant to the gateway. The deployed gateway speaks two HTTPS MCP transports &mdash; <strong>Streamable HTTP</strong> (recommended; stateless, scales across replicas) via <code>POST /mcp</code>, and the legacy <strong>HTTP+SSE</strong> via <code>GET /sse</code> + <code>POST /messages</code>. A local <code>stdio</code> mode is also available.</p>
+
+                        <h4 class="mt-4" style="color: var(--text-primary);">A. Claude Code / remote clients &mdash; Streamable HTTP (recommended)</h4>
+                        <p class="text-muted mt-1">Add a project <code>.mcp.json</code> pointing at the <code>/mcp</code> endpoint:</p>
+                        <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(120, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
+{
+  "mcpServers": {
+    "janus-gateway": {
+      "type": "http",
+      "url": "https://your-gateway-host/mcp",
+      "headers": { "Authorization": "Bearer your-issued-bearer-token" }
+    }
+  }
+}</pre>
+
+                        <h4 class="mt-4" style="color: var(--text-primary);">B. Antigravity &mdash; Streamable HTTP</h4>
+                        <p class="text-muted mt-1">Register the server in the Antigravity app's MCP config (its own config file, not the project repo):</p>
+                        <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(120, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
+{
+  "mcpServers": {
+    "janus-gateway": {
+      "serverUrl": "https://your-gateway-host/sse",
+      "headers": { "Authorization": "Bearer your-issued-bearer-token" }
+    }
+  }
+}</pre>
                         
-                        <h4 class="mt-4" style="color: var(--text-primary);">A. Claude Desktop (Stdio)</h4>
-                        <p class="text-muted mt-1">Add the gateway connection settings to your local <code>claude_desktop_config.json</code>:</p>
+                        <h4 class="mt-4" style="color: var(--text-primary);">C. Claude Desktop (stdio, local binary)</h4>
+                        <p class="text-muted mt-1">For a local desktop binary, add to <code>claude_desktop_config.json</code>:</p>
                         <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(120, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
 {
   "mcpServers": {
@@ -637,8 +663,8 @@
   }
 }</pre>
  
-                        <h4 class="mt-4" style="color: var(--text-primary);">B. Antigravity / Gemini SDK (SSE)</h4>
-                        <p class="text-muted mt-1">Configure your python agents to connect to the Server-Sent Events endpoint:</p>
+                        <h4 class="mt-4" style="color: var(--text-primary);">D. Antigravity / Gemini SDK (legacy SSE, Python)</h4>
+                        <p class="text-muted mt-1">Advanced: connect a Python agent to the legacy Server-Sent Events endpoint:</p>
                         <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(120, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
 from antigravity_sdk import Agent, ToolRegistry
 
@@ -724,6 +750,24 @@ mcp-cli vault list</pre>
                             <img src="/assets/portal_swagger_ui_bottom.png" alt="Swagger UI Bottom" class="docs-screenshot" style="max-height: 400px; object-fit: cover; object-position: top; width: 100%;" />
                             <div class="docs-screenshot-caption">Figure 5.3: Swagger UI endpoints and schemas overview.</div>
                         </div>
+                    </div>
+
+                    <!-- Section 6: Demos -->
+                    <div class="card glass docs-section" data-keywords="demo demos just script claude antigravity agy cross-currency collateral lch treasury bank of england ecb eurostat report mem-lch-002 gbp">
+                        <h3>6. Running the Demos</h3>
+                        <p class="text-muted mt-2">Two ready-to-run demos exercise the gateway end-to-end, generating a <strong>Cross-Currency Collateral Valuation &amp; Multi-Jurisdiction Rate Audit</strong> for LCH member <code>MEM-LCH-002</code>. The agent aggregates LCH collateral, U.S. Treasury rates, the Bank of England Bank Rate, ECB euro FX, and Eurostat inflation &mdash; all through the single governed gateway &mdash; and consolidates the multi-currency portfolio into a GBP reporting value.</p>
+                        <ul style="padding-left: 1.5rem; margin-top: 0.5rem; line-height: 1.6; color: var(--text-secondary);">
+                            <li><code>just demo-claude</code> &mdash; runs the demo through <strong>Claude Code</strong> (Streamable HTTP via <code>.mcp.json</code>).</li>
+                            <li><code>just demo-antigravity</code> &mdash; runs the demo through <strong>Antigravity</strong> (<code>agy</code>), driven by the <code>lch-collateral-reporting</code> skill.</li>
+                        </ul>
+                        <pre style="background: hsla(220, 15%, 8%, 0.8); padding: 1rem; border-radius: 6px; font-family: monospace; font-size: 0.85rem; color: hsl(200, 80%, 75%); margin-top: 0.5rem; overflow-x: auto;">
+# from the repo root (needs the janus-gateway MCP client configured)
+just demo-claude
+just demo-antigravity
+
+# override the client token used by the demo:
+JANUS_GATEWAY_TOKEN=&lt;token&gt; just demo-claude</pre>
+                        <p class="text-muted mt-1">Full instructions and a sample generated report are in the project <code>README.md</code> and on the documentation site.</p>
                     </div>
                 </div>
             </section>

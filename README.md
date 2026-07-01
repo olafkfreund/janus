@@ -4,12 +4,19 @@ An enterprise-grade, high-performance API Gateway and Web Portal that translates
 
 ## Features
 - **Dynamic MCP Tool Translation**: Declare connection endpoints and map request body/parameters to JSON Schema templates. The gateway automatically generates MCP-compliant tool definitions.
-- **Enterprise Security**:
-  - **OIDC/OAuth2 SSO**: Integrate Okta, Keycloak, or Azure AD for Portal authentication.
-  - **Token-Authenticated MCP Clients**: Restrict Claude, Copilot, or Antigravity connections via encrypted bearer tokens or JWTs.
-  - **mTLS & SSL/TLS 1.3**: Direct support for Mutual TLS client verification and encrypted network paths.
-- **Pluggable Security Vaults**: Read credentials dynamically at runtime using AWS Secrets Manager, Azure Key Vault, Google Cloud Secret Manager, or a local encrypted JSON store.
-- **Air-Gap Preparedness**: A self-contained Go binary with embedded single-page assets (`//go:embed`), fully local database capabilities (SQLite), and zero-compilation build flows.
+- **Dual MCP Transports**:
+  - **Streamable HTTP** (2025 spec, recommended): stateless `POST /mcp` (or `POST /sse`) — a JSON-RPC request in, the response in the body. No pinned stream, so it **scales across replicas**. Used by Antigravity and by Claude Code (`type: "http"`).
+  - **Legacy HTTP+SSE**: `GET /sse` (stream) + `POST /messages`; the response is also pushed back over the SSE stream. Used by clients configured with `type: "sse"`.
+- **Enterprise Security** (see [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md)):
+  - **Fail-closed config**: `JWT_SECRET` and `GATEWAY_TOKEN` must be ≥32 bytes or the process refuses to start — no usable default secrets.
+  - **Authorization, not just authentication**: admin REST APIs are behind role-enforcing middleware (RBAC). Local admin login is enabled only when `ADMIN_PASSWORD` (≥12 chars) is set; otherwise OIDC/SSO only.
+  - **SSRF egress guard**: dial-time blocking of private/loopback/link-local addresses and DNS-rebind, plus an optional hostname allowlist.
+  - **Token-Authenticated MCP Clients**: scoped client tokens (glob scopes + roles), **hashed at rest** (SHA-256) and shown once. Header-only bearer tokens.
+  - **OIDC/OAuth2 SSO** with `state` CSRF + issuer/audience/expiry validation; **mTLS & TLS 1.3**.
+  - **Hardened edge**: per-IP rate limiting, HTTP read/write/idle timeouts, request body-size caps.
+- **Pluggable Security Vaults**: `local` (encrypted JSON file, single-node/dev) and `postgres` (**AES-256-GCM encrypted in the shared database** — correct for multi-replica). `aws`/`gcp`/`azure` **fail closed** until implemented. Connections store only a **reference** (`auth_secret_ref`) — the credential is injected server-side (bearer/basic/custom headers); the LLM never sees it.
+- **Scales & self-heals**: stateless gateway on shared PostgreSQL, HorizontalPodAutoscaler (2→10) + PodDisruptionBudget on Kubernetes; short-TTL config/secret/response caches, connection pooling, bounded retries, and `/healthz` + `/readyz` probes (see [`SCALING_AND_CACHING.md`](SCALING_AND_CACHING.md)).
+- **Air-Gap Preparedness**: A self-contained Go binary with embedded single-page assets (`//go:embed`), local SQLite for single-node, and OpenTelemetry/Prometheus metrics.
 
 ---
 
@@ -257,24 +264,99 @@ Add the following connection to `claude_desktop_config.json`:
     }
   }
 }
+```
+
+---
+
+## Connecting MCP Clients (remote)
+
+For the deployed gateway, point clients at the HTTP(S) endpoint with a bearer token (the master `GATEWAY_TOKEN` for admin/`*`, or a scoped client token).
+
+**Claude Code** — `.mcp.json` in the project root, using the stateless Streamable HTTP transport:
+```json
+{
+  "mcpServers": {
+    "janus-gateway": {
+      "type": "http",
+      "url": "https://<gateway-host>/mcp",
+      "headers": { "Authorization": "Bearer ${JANUS_GATEWAY_TOKEN}" }
+    }
+  }
+}
+```
+
+**Antigravity** — register the server in Antigravity's MCP config (`~/.gemini/antigravity/mcp_config.json`; it does **not** read a repo-local file). Antigravity uses Streamable HTTP against `/sse`:
+```json
+{ "mcpServers": { "janus-gateway": {
+  "serverUrl": "https://<gateway-host>/sse",
+  "headers": { "Authorization": "Bearer <token>" } } } }
+```
+
+Legacy `type: "sse"` clients also work (`GET /sse` + `POST /messages`); prefer `/mcp` for multi-replica.
+
+---
+
+## Demos
+
+The repo ships two end-to-end demos (via `just`) that drive real LLM agents against the **live** gateway and generate a governed financial report. Both aggregate LCH collateral + US Treasury + **Bank of England** + **ECB FX** + **Eurostat** through the single gateway and consolidate a multi-currency portfolio into a GBP value (~£36.39M). A sample output is committed at [`doc/sample_crosscurrency_collateral_report.md`](doc/sample_crosscurrency_collateral_report.md).
+
+| Recipe | Script | Agent | What it does |
+| :--- | :--- | :--- | :--- |
+| `just demo-claude` | `scripts/demo_janus_claude.sh` | Claude Code (`claude -p`) | Loads janus via `.mcp.json` (`/mcp`) and produces a **Cross-Currency Collateral Valuation & Multi-Jurisdiction Rate Audit** for member `MEM-LCH-002`. |
+| `just demo-antigravity` | `scripts/demo_janus_mcp.sh` | Antigravity (`agy --print`) | Runs the `lch-collateral-reporting` skill (in `.agents/skills/`) to produce the same report. |
+| `just mcp-config-claude` | — | — | Prints the Claude Code MCP config (`.mcp.json`). |
+
+**Prerequisites & notes**
+- **Claude demo**: the `claude` CLI + a claude.ai subscription. The script **unsets `ANTHROPIC_API_KEY`** so it uses the subscription (not the pay-as-you-go API key). Override the gateway token with `JANUS_GATEWAY_TOKEN=... just demo-claude`.
+- **Antigravity demo**: the `agy` CLI, with `janus-gateway` registered in `~/.gemini/antigravity/mcp_config.json`. The skill lives in `.agents/skills/lch-collateral-reporting/`.
+- Both are **billable** LLM runs (five tool calls each). They print the generated report to stdout.
+
 ---
 
 ## Configuration Settings
 
-Configure the gateway using standard environment variables:
+Configure the gateway using standard environment variables. A full template is in [`.env.example`](.env.example).
+
+**Required (fail-closed — the process refuses to start without them):**
+
+| Variable | Purpose |
+| :--- | :--- |
+| `JWT_SECRET` | Signs portal JWT sessions. **Must be ≥32 bytes.** |
+| `GATEWAY_TOKEN` | Master bearer token for MCP clients (→ admin/`*`). **Must be ≥32 bytes.** |
+
+**Core / storage / vault:**
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `PORT` | `8899` | Port to host the Web Portal and SSE endpoints. |
-| `DATABASE_PATH` | `./mcp-gateway.db` | Local SQLite database file location. |
-| `DATABASE_URL` | `""` | Connection URI for remote PostgreSQL database (ex: `postgres://user:pass@host:5432/db`). Overrides `DATABASE_PATH` when set. |
-| `VAULT_PROVIDER` | `local` | Pluggable vault provider (`local`, `aws`, `gcp`, `azure`). |
-| `VAULT_LOCAL_PATH` | `./secrets.json` | JSON vault secrets file (used when provider is `local`). |
-| `JWT_SECRET` | *(Random)* | Secret key used to sign portal JWT session tokens. |
-| `TLS_CERT_PATH` | `""` | Path to HTTPS server certificate. |
-| `TLS_KEY_PATH` | `""` | Path to HTTPS private key. |
-| `CLIENT_CA_PATH` | `""` | Path to CA root (activates **Mutual TLS (mTLS)**). |
-| `OIDC_ISSUER` | `""` | OpenID Connect identity provider URL (e.g. Okta, Keycloak). |
+| `PORT` | `8080` | Port for the Web Portal and MCP endpoints. |
+| `DATABASE_PATH` | `./mcp-gateway.db` | Local SQLite file. |
+| `DATABASE_URL` | `""` | PostgreSQL URI (`postgres://…`). Overrides `DATABASE_PATH`; required for multi-replica. |
+| `VAULT_PROVIDER` | `local` | `local`, `postgres` (implemented) or `aws`/`gcp`/`azure` (fail closed). |
+| `VAULT_LOCAL_PATH` | `./secrets.json` | JSON vault file (provider `local`). |
+| `VAULT_ENCRYPTION_KEY` | *(falls back to `JWT_SECRET`)* | AES key source for the `postgres` vault. |
+
+**Auth / SSO / TLS:**
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / *(empty)* | Local admin login. Disabled unless password (≥12) is set. |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | `""` | OpenID Connect SSO. |
+| `OIDC_DEFAULT_ROLE` | `admin` | Role granted to SSO users. |
+| `PUBLIC_BASE_URL` | `""` | Public URL used to build the OIDC redirect URI. |
+| `TLS_CERT_PATH` / `TLS_KEY_PATH` / `CLIENT_CA_PATH` | `""` | HTTPS cert/key; CA bundle activates **mTLS**. |
+
+**Security policy / performance / demo:**
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `EGRESS_ALLOWLIST` | `""` | Comma-separated downstream hostname allowlist (empty = any public host). |
+| `EGRESS_ALLOW_PRIVATE` | `false` | Permit calls to private/loopback ranges (local/demo only). |
+| `CORS_ALLOWED_ORIGINS` | `""` | Allowed SSE/CORS origins (empty = none). |
+| `METRICS_TOKEN` | `""` | Bearer token to scrape `/metrics` (empty = open). |
+| `CONFIG_CACHE_TTL` / `SECRET_CACHE_TTL` / `RESPONSE_CACHE_TTL` | `5s` / `30s` / `0` | TTLs for topology / secret / idempotent-GET caches. |
+| `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` | `25` / `10` | DB connection pool. |
+| `DOWNSTREAM_RETRIES` | `2` | Bounded retries (backoff) for idempotent downstream calls. |
+| `SEED_DEMO_DATA` | `false` | Seed demo connections/tools on first boot. |
 
 ---
 
@@ -340,21 +422,28 @@ just build-cli-all
 
 ## Integrating with Secret Vaults
 
-Sensitive auth tokens (Basic, Bearer, Custom Headers) are retrieved at query runtime from your chosen vault.
+Sensitive auth tokens are retrieved at query runtime from your chosen vault. The connection stores only a **reference** (`auth_secret_ref`) — the gateway resolves it and injects the credential server-side, so the LLM never sees it. Rotate the secret in the vault and every tool using it updates instantly.
 
-| Provider (`VAULT_PROVIDER`) | Config Requirements | Auth Mechanism |
+| Provider (`VAULT_PROVIDER`) | Status | Storage |
 | :--- | :--- | :--- |
-| `local` | `VAULT_LOCAL_PATH` | Local JSON dictionary |
-| `aws` | AWS environment keys | IAM Instance Profile / IRSA |
-| `gcp` | GCP environment keys | Workload Identity / ADC |
-| `azure` | Azure credentials | Managed Identity |
+| `local` | ✅ Implemented | Local JSON file (`VAULT_LOCAL_PATH`) — single-node/dev |
+| `postgres` | ✅ Implemented | **AES-256-GCM encrypted** in the shared PostgreSQL DB — correct for multi-replica |
+| `aws` / `gcp` / `azure` | ⛔ Fail closed | Not yet implemented — refuses to start (never returns fake secrets) |
+
+**Per-connection `auth_type`** — how the gateway injects the resolved secret:
+
+| `auth_type` | Header injected | Vault secret format | Example |
+| :--- | :--- | :--- | :--- |
+| `none` | — | — | Public APIs (BoE, ECB, Eurostat…) |
+| `bearer` | `Authorization: Bearer <secret>` | the token | OAuth/token APIs |
+| `basic` | HTTP Basic | `user:pass` | **UK Companies House** = `<APIKEY>:` |
+| `custom_headers` | arbitrary headers | JSON map | **FCA register** = `{"X-Auth-Email":"…","X-Auth-Key":"…"}` |
+
+> Known limitation: credentials are injected as **headers** only. APIs that require the key as a **query parameter** need a small future `query_param` auth type — most APIs offer an `X-API-Key` header alternative (use `custom_headers`).
 
 ### Storing a Secret
-Open the Portal UI, navigate to the **Security Vault** view, and insert the secret mapping:
-- **Secret Path**: `prod/billing-service/api-key`
-- **Secret Value**: `Bearer xoxb-123456789-abcdef`
-
-When setting up your **API Connection**, map `Auth Secret Ref` to `prod/billing-service/api-key`.
+In the Portal **Security Vault** view (or `POST /api/vault`), insert the secret mapping, then set the connection's `Auth Secret Ref` to that key:
+- **Secret Path**: `prod/billing-service/api-key`  →  **Secret Value**: the raw token/credential.
 
 ---
 
@@ -578,34 +667,44 @@ graph TD
 ```
 
 #### 2. Deploy Stateless Pods with PostgreSQL
-Update the `mcp-gateway-secrets` Secret to include your database configuration, and apply `k8s-deployment.yaml` with a PostgreSQL connection string:
-```bash
-# Apply deployments
-kubectl apply -f k8s-deployment.yaml
-```
+The live reference deployment (AWS EKS cluster `sarc-aws`, namespace `janus`) runs the **stateless gateway on an in-cluster PostgreSQL** (`janus-db`), with the DB URL in the `mcp-gateway-secrets` Secret. Manifests are split by lifecycle:
 
-Set the environment variable:
-```yaml
-- name: DATABASE_URL
-  value: "postgres://postgres:secure_db_pass@postgres-service.default.svc.cluster.local:5432/mcp_db?sslmode=disable"
-```
-Because the storage is delegated to a shared PostgreSQL cluster, pods run completely stateless. You can scale replicas on the fly:
 ```bash
-# Scale gateway instances to 5 pods
-kubectl scale deployment mcp-api-gateway --replicas=5
-```
+# One-time (out-of-band): namespace, secret, Postgres, HPA + PDB
+kubectl create namespace janus
+kubectl apply -f k8s/janus-db.yaml        # in-cluster Postgres
+kubectl apply -f k8s/janus-scaling.yaml   # HorizontalPodAutoscaler (2->10) + PodDisruptionBudget
 
-#### 3. Establish Ingress Session Affinity
-The included `Ingress` controller resource configures sticky sessions. NGINX will automatically insert a routing cookie (`route`) on client SSE requests and forward corresponding JSON-RPC POST calls back to the same pod instance, preventing "Session not found" discrepancies during execution.
+# Per release (CI-applied): the stateless gateway Deployment/Service/Ingress
+kubectl apply -f k8s-janus.yaml
+```
+The gateway Deployment **omits `replicas`** — the HPA owns the count. Because state lives in Postgres (config, tokens, audit, and the AES-encrypted vault), pods are fully stateless. CI/CD deploys via GitHub Actions using **GitHub OIDC** (the `AWS_DEPLOY_ROLE_ARN` repo variable — no stored keys); see [`deployment/GITHUB_OIDC_SETUP.md`](deployment/GITHUB_OIDC_SETUP.md).
+
+#### 3. Transport & session routing
+- **Streamable HTTP (`/mcp`) is stateless** — any replica serves any request, so scale-out needs no session affinity. This is the recommended transport for multi-replica.
+- The **legacy `GET /sse` + `POST /messages`** transport is stateful (the stream is pinned to one pod). For it, the NGINX Ingress inserts a `route` cookie so the POST lands on the same pod. Clients that don't carry the cookie should use `/mcp` instead.
 
 ---
 
-### Scenario F: LCH Group Concorde API & MCP Integration (DPG Trade Volume & Non-Cash Collateral)
+### Scenario F: LCH Group clearing + multi-jurisdiction market data
 
-Exposes daily cleared trade statistics and non-cash asset breakdown (market values and haircuts) as governed MCP tools.
+With `SEED_DEMO_DATA=true`, the gateway seeds a governed, multi-source demo used by the `just` demos above. Tools exposed:
+
+| Prefix | Source | Auth | Example tool |
+| :--- | :--- | :--- | :--- |
+| `lch_` | LCH mock (DPG trade volume, non-cash collateral) | none | `lch_get_non_cash_collateral` |
+| `ustreasury_` | U.S. Treasury Fiscal Data | none | `ustreasury_get_avg_interest_rates` |
+| `coinbase_` | Coinbase Exchange | none | `coinbase_get_btc_stats` |
+| `boe_` | **Bank of England** (Bank Rate) | none | `boe_get_bank_rate` |
+| `fx_` / `ecb_` | **ECB** euro reference rates (Frankfurter / Data Portal) | none | `fx_get_reference_rates` |
+| `eurostat_` | **Eurostat** (HICP inflation) | none | `eurostat_get_hicp_inflation` |
+| `ons_` | **UK ONS** | none | `ons_list_datasets` |
+| `vaultdemo_` | httpbin (bearer via vault) | **vault** | `vaultdemo_check_auth` |
+
+> Client tokens are **not seeded** (the old hardcoded token was removed for security). Use the master `GATEWAY_TOKEN` for admin/`*` access, or create a scoped token in the Portal → **Client Tokens** (`POST /api/tokens`).
 
 #### 1. Out-of-the-Box Simulated Targets
-The gateway automatically registers the mock services database mapping upon initial startup. It exposes two downstream endpoints under `http://127.0.0.1:<port>/api/mock`:
+The LCH mock exposes two downstream endpoints under `http://127.0.0.1:<port>/api/mock`:
 * `/dpg/trade-volume`: Daily trade volumes and currency breakdown.
 * `/collateral/non-cash`: ISIN listings and valuations.
 
@@ -620,9 +719,9 @@ curl http://localhost:8899/api/mock/collateral/non-cash?member_id=MEM-LCH-001
 ```
 
 #### 3. Invoking via MCP Facade
-LLM clients (such as Claude Desktop or Concorde Portal agents) communicate over the standard Stdio or SSE stream using a client token (e.g. `lch_member_test_token_889`):
+LLM clients communicate over Stdio or the HTTP transports using a client token (the master `GATEWAY_TOKEN`, or a scoped token issued in the Portal):
 ```bash
-export MCP_GATEWAY_TOKEN=lch_member_test_token_889
+export MCP_GATEWAY_TOKEN="$GATEWAY_TOKEN"   # or a scoped client token
 echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"lch_get_dpg_trade_volume","arguments":{"member_id":"MEM-LCH-001"}},"id":1}' | ./mcp-gateway -stdio
 ```
 The gateway parses the parameter `member_id`, forwards the query to the underlying REST service, validates outputs, and returns clean, structured data to the client.
@@ -630,13 +729,15 @@ The gateway parses the parameter `member_id`, forwards the query to the underlyi
 ---
 
 ## File Structure
-- `main.go`: Application lifecycle.
-- `schema.sql`: Local DB table layouts.
-- `pkg/config`: Configuration schemas.
-- `pkg/storage`: DB connector, CRUD actions, and audit logs.
-- `pkg/vault`: Interface for AWS, GCP, Azure, and Local vaults.
-- `pkg/auth`: JWT issuers, SSO authentication, and TLS profiles.
-- `pkg/gateway`: Dynamic parameter rendering and HTTP call execution.
-- `pkg/mcp`: Model Context Protocol JSON-RPC implementation.
-- `pkg/portal`: REST API and static single page serving.
-- `pkg/portal/static`: Front-end HTML/CSS/JS files.
+- `main.go`: Application lifecycle, HTTP wiring, middleware (rate-limit, body-limit, `/healthz`, `/readyz`).
+- `pkg/config`: Fail-closed configuration loading and validation.
+- `pkg/storage`: SQLite/Postgres connector, CRUD, audit logs, hashed client tokens, short-TTL caches.
+- `pkg/vault`: `local` (file) and `postgres` (AES-256-GCM) vaults; cloud providers fail closed.
+- `pkg/auth`: JWT (audience/issuer), RBAC middleware, OIDC, TLS/mTLS profiles.
+- `pkg/gateway`: Template rendering, SSRF egress guard, secret/response caches, retries, HTTP execution.
+- `pkg/mcp`: MCP JSON-RPC — Streamable HTTP (`/mcp`) + legacy HTTP+SSE (`/sse`, `/messages`).
+- `pkg/portal`: Admin REST API, OIDC/local login, OpenAPI, embedded SPA (`static/`).
+- `pkg/cache`: Generic dependency-free TTL cache.
+- `pkg/telemetry`: OpenTelemetry + Prometheus metrics.
+- `k8s-janus.yaml`, `k8s/janus-db.yaml`, `k8s/janus-scaling.yaml`: Kubernetes manifests (see Scenario E).
+- `SECURITY_REVIEW.md`, `SCALING_AND_CACHING.md`, `deployment/GITHUB_OIDC_SETUP.md`: security, scaling, and deploy docs.

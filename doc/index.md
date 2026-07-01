@@ -8,6 +8,36 @@ layout: default
 
 It acts as a secure, transparent reverse proxy that dynamically translates legacy REST/HTTP endpoints into standardized MCP tools that LLM clients (such as Claude, Antigravity, or Copilot) can query in real time.
 
+> **▶ See the [Demos & Client Integration](demos.html) page** for the end-to-end Claude Code and Antigravity walkthroughs and how to run them.
+
+---
+
+## MCP Transports (both supported)
+
+Janus speaks both MCP HTTP transports on the same deployment, so any compliant client connects:
+
+* **Streamable HTTP (recommended)** — `POST /mcp` (or `POST /sse`) with a JSON-RPC body; the response returns in the body. **Stateless** — every request is authenticated by its bearer token, so any replica can serve any request. Used by **Antigravity**, and by **Claude Code** with `type: "http"`.
+* **Legacy HTTP+SSE** — `GET /sse` opens the stream, JSON-RPC is `POST`ed to `/messages`; responses are pushed back over the stream. Stateful (pinned to one pod); use sticky sessions or prefer `/mcp` for scale-out.
+
+## Security & Governance
+
+* **Fail-closed configuration** — no usable default secrets; `JWT_SECRET` and `GATEWAY_TOKEN` must be ≥ 32 bytes or the process refuses to start. Local admin login is disabled unless `ADMIN_PASSWORD` (≥ 12) is set.
+* **Role-enforced admin API (RBAC)** — every administrative endpoint requires the `admin` role, not merely a valid session.
+* **SSRF egress guard** — downstream targets are validated at dial time; private/loopback/link-local ranges and DNS-rebinding are blocked (cloud-metadata endpoints unreachable).
+* **Client tokens hashed at rest** (SHA-256), shown once at creation; per-IP rate limiting, request-size caps, and HTTP timeouts throughout.
+
+## Credential Handling & the Encrypted Vault
+
+Downstream APIs that need credentials never store them in the connection config — the connection holds only a **vault reference** (`auth_secret_ref`). The gateway resolves and injects the credential **server-side at call time**; the LLM never sees it, and it is never logged.
+
+* **Vault providers** — `postgres` (AES-256-GCM encrypted in the shared database — correct for multi-replica), `local` (file, single-node/dev). Cloud providers fail closed until implemented.
+* **`auth_type` per connection** — `none` (public), `bearer` (`Authorization: Bearer …`), `basic` (`user:pass`; e.g. UK Companies House uses `APIKEY:`), or `custom_headers` (a JSON header map, e.g. `{"X-Auth-Key":"…"}`).
+* **Rotate once, everywhere** — update the secret in the vault and every tool using it picks up the new value; scoped client tokens restrict which tools a given agent may call.
+
+## Scaling & Deployment
+
+Stateless gateway on an in-cluster **PostgreSQL** system of record, autoscaled by a **HorizontalPodAutoscaler (2→10)** with a PodDisruptionBudget on **AWS EKS**. CI/CD is GitHub Actions with **GitHub OIDC** (no static AWS keys) building to ECR and rolling out via `kubectl`. Streamable HTTP makes horizontal scale-out safe without a shared message bus.
+
 ---
 
 ## Web Portal Walkthrough
@@ -235,16 +265,23 @@ Configure the gateway using standard environment variables:
 
 | Variable | Default | Purpose |
 | :--- | :--- | :--- |
-| `PORT` | `8899` | Port to host the Web Portal and SSE endpoints. |
+| `PORT` | `8080` | Port to host the Web Portal and MCP endpoints. |
+| `JWT_SECRET` | *(required, ≥32B)* | Signs portal JWT session tokens. Fail-closed if unset/weak. |
+| `GATEWAY_TOKEN` | *(required, ≥32B)* | Master bearer token for MCP clients (admin / `*` scope). Fail-closed if unset/weak. |
+| `ADMIN_PASSWORD` | `""` | Enables local admin login (≥12 chars). Empty = local login disabled (SSO only). |
 | `DATABASE_PATH` | `./mcp-gateway.db` | Local SQLite database file location. |
-| `DATABASE_URL` | `""` | Connection URI for remote PostgreSQL database (ex: `postgres://user:pass@host:5432/db`). Overrides `DATABASE_PATH` when set. |
-| `VAULT_PROVIDER` | `local` | Pluggable vault provider (`local`, `aws`, `gcp`, `azure`). |
-| `VAULT_LOCAL_PATH` | `./secrets.json` | JSON vault secrets file (used when provider is `local`). |
-| `JWT_SECRET` | *(Random)* | Secret key used to sign portal JWT session tokens. |
-| `TLS_CERT_PATH` | `""` | Path to HTTPS server certificate. |
-| `TLS_KEY_PATH` | `""` | Path to HTTPS private key. |
-| `CLIENT_CA_PATH` | `""` | Path to CA root (activates **Mutual TLS (mTLS)**). |
-| `OIDC_ISSUER` | `""` | OpenID Connect identity provider URL (e.g. Okta, Keycloak). |
+| `DATABASE_URL` | `""` | PostgreSQL URI (`postgres://user:pass@host:5432/db`). Overrides `DATABASE_PATH`; required for multi-replica. |
+| `VAULT_PROVIDER` | `local` | Vault backend: `postgres` (encrypted, shared), `local` (file). `aws`/`gcp`/`azure` fail closed. |
+| `VAULT_ENCRYPTION_KEY` | *(JWT_SECRET)* | AES key source for the `postgres` vault. |
+| `VAULT_LOCAL_PATH` | `./secrets.json` | JSON vault file (when provider is `local`). |
+| `SEED_DEMO_DATA` | `false` | Seed the demo connections/tools on first boot. |
+| `EGRESS_ALLOWLIST` / `EGRESS_ALLOW_PRIVATE` | `""` / `false` | SSRF egress policy: allowed downstream hosts / permit private ranges. |
+| `CONFIG_CACHE_TTL` / `SECRET_CACHE_TTL` / `RESPONSE_CACHE_TTL` | `5s` / `30s` / `0s` | In-process cache TTLs (config busted on write). |
+| `CORS_ALLOWED_ORIGINS` | `""` | Allowed SSE/CORS origins. |
+| `METRICS_TOKEN` | `""` | Bearer token to scrape `/metrics` (empty = open). |
+| `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_DEFAULT_ROLE` | `""` / `admin` | OpenID Connect SSO (Okta/Keycloak) + role granted to SSO users. |
+| `PUBLIC_BASE_URL` | `""` | Public URL used to build the OIDC redirect URI. |
+| `TLS_CERT_PATH` / `TLS_KEY_PATH` / `CLIENT_CA_PATH` | `""` | HTTPS cert/key; CA root activates **mTLS**. |
 
 ---
 
