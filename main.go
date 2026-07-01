@@ -120,9 +120,10 @@ func main() {
 	// Register Admin Portal and API routes
 	portalServer.RegisterRoutes(mux)
 
-	// Register MCP SSE Server endpoints
-	mux.HandleFunc("/sse", mcpServer.ServeSSE)
-	mux.HandleFunc("/messages", mcpServer.ServeMessages)
+	// Register MCP SSE Server endpoints (with lightweight access logging so we can
+	// see how each MCP client negotiates the transport).
+	mux.HandleFunc("/sse", logMCP("sse", mcpServer.ServeSSE))
+	mux.HandleFunc("/messages", logMCP("messages", mcpServer.ServeMessages))
 
 	// Liveness: process is up. Readiness: dependencies (DB) are reachable so the
 	// load balancer / HPA only routes to pods that can actually serve.
@@ -190,6 +191,16 @@ func main() {
 
 	<-idleConnsClosed
 	log.Println("Server stopped.")
+}
+
+// logMCP logs how MCP clients negotiate the transport (method, path, Accept,
+// User-Agent). Low volume; useful for diagnosing client compatibility.
+func logMCP(label string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("MCP[%s] %s %s?%s Accept=%q UA=%q", label, r.Method, r.URL.Path, r.URL.RawQuery,
+			r.Header.Get("Accept"), r.Header.Get("User-Agent"))
+		next.ServeHTTP(w, r)
+	}
 }
 
 // limitBody caps request body size to defend against memory-exhaustion DoS.
