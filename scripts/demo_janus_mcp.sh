@@ -33,17 +33,17 @@ echo -e "${NC}"
 sleep 2
 
 echo -e "${CYAN}[3/4] Triggering Antigravity CLI agent session...${NC}"
-echo -e "The agent will:"
+echo -e "The agent will (all via the single governed gateway):"
 echo -e "  1. Automatically load the ${GREEN}janus-gateway${NC} remote tools via EKS."
 echo -e "  2. Activate the ${GREEN}lch-collateral-reporting${NC} governed compliance skill."
-echo -e "  3. Query LCH and Treasury APIs deterministically through the gateway."
-echo -e "  4. Compile a structured audit and margin valuation report."
+echo -e "  3. Query LCH collateral + ${GREEN}US Treasury, Bank of England, ECB FX, Eurostat${NC} deterministically."
+echo -e "  4. Translate the multi-currency portfolio to GBP and compile a cross-currency margin audit."
 echo -e ""
-echo -e "${MAGENTA}Running: agy --print \"Generate a collateral valuation report for LCH member MEM-LCH-002 using the lch-collateral-reporting skill.\"${NC}"
+echo -e "${MAGENTA}Running: agy --print \"Generate a cross-currency collateral & multi-jurisdiction rate audit for MEM-LCH-002 using the lch-collateral-reporting skill.\"${NC}"
 echo -e ""
 
 # Execute agy command
-agy --print "Generate a collateral valuation report for LCH member MEM-LCH-002 using the lch-collateral-reporting skill."
+agy --print "Generate a cross-currency collateral valuation and multi-jurisdiction rate audit for LCH member MEM-LCH-002 using the lch-collateral-reporting skill. Use the LCH, US Treasury, Bank of England, ECB FX, and Eurostat tools via the janus-gateway, and consolidate the portfolio into a GBP reporting value."
 
 echo -e ""
 echo -e "${BLUE}================================================================${NC}"

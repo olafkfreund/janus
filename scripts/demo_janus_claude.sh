@@ -46,13 +46,13 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 
 echo -e "${CYAN}[3/4] Triggering Claude Code (headless) agent session...${NC}"
-echo -e "The agent will:"
+echo -e "The agent will (all via the single governed gateway):"
 echo -e "  1. Load the ${GREEN}janus-gateway${NC} remote MCP tools via EKS (.mcp.json)."
-echo -e "  2. Query LCH collateral and Treasury APIs through the gateway."
-echo -e "  3. Compile a structured collateral valuation / audit report."
+echo -e "  2. Pull LCH collateral + multi-jurisdiction rates: ${GREEN}US Treasury, Bank of England, ECB FX, Eurostat${NC}."
+echo -e "  3. Translate the multi-currency portfolio to GBP and compile a cross-currency margin audit."
 echo -e ""
-PROMPT="Using the janus-gateway MCP tools, fetch the non-cash collateral holdings for LCH member MEM-LCH-002 and the latest US Treasury average interest rates, then compile a structured collateral valuation and margin audit report."
-echo -e "${MAGENTA}Running: claude -p \"<collateral report prompt>\" --mcp-config .mcp.json --allowedTools \"mcp__janus-gateway\"${NC}"
+PROMPT="Using ONLY the janus-gateway MCP tools (do not fabricate any figures), produce a Cross-Currency Collateral Valuation & Multi-Jurisdiction Rate Audit for LCH clearing member MEM-LCH-002. Steps: (1) fetch the member's non-cash collateral via lch_get_non_cash_collateral; (2) fetch US Treasury average interest rates via ustreasury_get_avg_interest_rates; (3) fetch the UK Bank of England Bank Rate via boe_get_bank_rate (CSV, take the latest value); (4) fetch euro-area HICP inflation via eurostat_get_hicp_inflation with geo EA; (5) fetch ECB euro FX reference rates via fx_get_reference_rates with base EUR and symbols USD,GBP. Then reconcile each asset's post-haircut value, translate the multi-currency portfolio into a single GBP reporting value using the ECB FX rates, benchmark the collateral against the US/UK/EU reference rates, add euro-area inflation context, and produce a structured markdown margin audit report with a clear consolidated GBP figure."
+echo -e "${MAGENTA}Running: claude -p \"<cross-currency report prompt>\" --mcp-config .mcp.json --allowedTools \"mcp__janus-gateway\"${NC}"
 echo -e ""
 
 # Use the claude.ai subscription, not ANTHROPIC_API_KEY: Claude Code prefers the
