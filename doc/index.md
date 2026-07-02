@@ -10,6 +10,12 @@ It acts as a secure, transparent reverse proxy that dynamically translates legac
 
 > **▶ See the [Demos & Client Integration](demos.html) page** for the end-to-end Claude Code and Antigravity walkthroughs and how to run them.
 
+### New capability guides
+
+* **[OpenAPI → MCP Import](openapi_import.html)** — generate a connection and one tool per operation straight from an OpenAPI 3.x spec (`mcp-cli import openapi` or `POST /api/import/openapi`).
+* **[OAuth 2.1 Resource Server](oauth_resource_server.html)** — accept audience-bound IdP access tokens on the MCP endpoints (RFC 9728 / 8707), alongside Janus client tokens.
+* **[Governance: Tool Pinning & Redaction](governance_pinning_redaction.html)** — SHA-256 tool-definition pinning (rug-pull defense) and PII/secret redaction (DLP) over tool traffic.
+
 ---
 
 ## MCP Transports (both supported)
@@ -25,12 +31,16 @@ Janus speaks both MCP HTTP transports on the same deployment, so any compliant c
 * **Role-enforced admin API (RBAC)** — every administrative endpoint requires the `admin` role, not merely a valid session.
 * **SSRF egress guard** — downstream targets are validated at dial time; private/loopback/link-local ranges and DNS-rebinding are blocked (cloud-metadata endpoints unreachable).
 * **Client tokens hashed at rest** (SHA-256), shown once at creation; per-IP rate limiting, request-size caps, and HTTP timeouts throughout.
+* **OAuth 2.1 resource server (optional)** — with `OAUTH_ENABLED`, the MCP endpoints accept **audience-bound** IdP access tokens (RFC 9728 discovery + `WWW-Authenticate` challenge, RFC 8707 `aud` validation, fail-closed) alongside Janus client tokens. See [OAuth 2.1 Resource Server](oauth_resource_server.html).
+* **Tool-definition pinning (optional)** — every tool carries a SHA-256 `definitionHash` + `version`, surfaced in `tools/list`; `TOOL_PINNING_STRICT` blocks calls to any tool that changed since it was approved (rug-pull defense).
+* **PII/secret redaction — DLP (optional)** — with `REDACTION_ENABLED`, emails, cards, JWTs, cloud/API keys and IBANs are masked in tool arguments *and* downstream responses before the LLM sees them, and the masking is audit-logged. See [Tool Pinning & Redaction](governance_pinning_redaction.html).
 
 ## Credential Handling & the Encrypted Vault
 
 Downstream APIs that need credentials never store them in the connection config — the connection holds only a **vault reference** (`auth_secret_ref`). The gateway resolves and injects the credential **server-side at call time**; the LLM never sees it, and it is never logged.
 
-* **Vault providers** — `postgres` (AES-256-GCM encrypted in the shared database — correct for multi-replica), `local` (file, single-node/dev). Cloud providers fail closed until implemented.
+* **Vault providers** — `postgres` (AES-256-GCM encrypted in the shared database — correct for multi-replica), `local` (**AES-256-GCM encrypted file at rest**, single-node/dev). Cloud providers fail closed until implemented.
+* **Encrypted-at-rest, everywhere** — the `local` vault file is sealed with AES-256-GCM using `VAULT_ENCRYPTION_KEY` (falling back to `JWT_SECRET`). A pre-existing plaintext vault is **transparently migrated** on first load and re-persisted encrypted; loading with the wrong key fails closed rather than exposing secrets.
 * **`auth_type` per connection** — `none` (public), `bearer` (`Authorization: Bearer …`), `basic` (`user:pass`; e.g. UK Companies House uses `APIKEY:`), or `custom_headers` (a JSON header map, e.g. `{"X-Auth-Key":"…"}`).
 * **Rotate once, everywhere** — update the secret in the vault and every tool using it picks up the new value; scoped client tokens restrict which tools a given agent may call.
 
@@ -273,13 +283,19 @@ Configure the gateway using standard environment variables:
 | `DATABASE_URL` | `""` | PostgreSQL URI (`postgres://user:pass@host:5432/db`). Overrides `DATABASE_PATH`; required for multi-replica. |
 | `VAULT_PROVIDER` | `local` | Vault backend: `postgres` (encrypted, shared), `local` (file). `aws`/`gcp`/`azure` fail closed. |
 | `VAULT_ENCRYPTION_KEY` | *(JWT_SECRET)* | AES key source for the `postgres` vault. |
-| `VAULT_LOCAL_PATH` | `./secrets.json` | JSON vault file (when provider is `local`). |
+| `VAULT_LOCAL_PATH` | `./secrets.json` | Vault file (when provider is `local`); AES-256-GCM encrypted at rest, plaintext files auto-migrated. |
+| `REDACTION_ENABLED` | `false` | Mask PII/secrets (emails, cards, JWTs, cloud/API keys, IBANs) in tool args + downstream responses; audit-logged. |
+| `TOOL_PINNING_STRICT` | `false` | Reject `tools/call` when a tool's live definition no longer matches its approved SHA-256 hash. |
 | `SEED_DEMO_DATA` | `false` | Seed the demo connections/tools on first boot. |
 | `EGRESS_ALLOWLIST` / `EGRESS_ALLOW_PRIVATE` | `""` / `false` | SSRF egress policy: allowed downstream hosts / permit private ranges. |
 | `CONFIG_CACHE_TTL` / `SECRET_CACHE_TTL` / `RESPONSE_CACHE_TTL` | `5s` / `30s` / `0s` | In-process cache TTLs (config busted on write). |
 | `CORS_ALLOWED_ORIGINS` | `""` | Allowed SSE/CORS origins. |
 | `METRICS_TOKEN` | `""` | Bearer token to scrape `/metrics` (empty = open). |
 | `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` / `OIDC_DEFAULT_ROLE` | `""` / `admin` | OpenID Connect SSO (Okta/Keycloak) + role granted to SSO users. |
+| `OAUTH_ENABLED` | `false` | Enable the OAuth 2.1 resource server on the MCP endpoints (RFC 9728/8707). Off = client-token auth only. |
+| `OAUTH_RESOURCE_URI` | `""` | Canonical resource identity; access-token `aud` must contain it. Required when `OAUTH_ENABLED`. |
+| `OAUTH_AUTHORIZATION_SERVERS` | `""` | Comma-separated trusted authorization-server issuers. Required when `OAUTH_ENABLED`. |
+| `OAUTH_SCOPES_SUPPORTED` | `""` | Comma-separated scopes advertised in the protected-resource metadata document. |
 | `PUBLIC_BASE_URL` | `""` | Public URL used to build the OIDC redirect URI. |
 | `TLS_CERT_PATH` / `TLS_KEY_PATH` / `CLIENT_CA_PATH` | `""` | HTTPS cert/key; CA root activates **mTLS**. |
 

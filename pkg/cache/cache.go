@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+// janitorInterval is how often the background sweep evicts expired entries.
+// Kept coarse since eviction is best-effort housekeeping, not a correctness
+// requirement (Get already treats expired entries as misses).
+const janitorInterval = 90 * time.Second
+
 type entry[V any] struct {
 	value   V
 	expires time.Time
@@ -15,9 +20,10 @@ type entry[V any] struct {
 
 // TTLCache is a concurrency-safe map with per-entry expiry.
 type TTLCache[V any] struct {
-	mu  sync.RWMutex
-	ttl time.Duration
-	m   map[string]entry[V]
+	mu          sync.RWMutex
+	ttl         time.Duration
+	m           map[string]entry[V]
+	janitorOnce sync.Once
 }
 
 // New returns a cache with the given default TTL. A ttl <= 0 disables caching:
@@ -49,8 +55,40 @@ func (c *TTLCache[V]) Set(key string, value V) {
 	if !c.Enabled() {
 		return
 	}
+	c.startJanitor()
 	c.mu.Lock()
 	c.m[key] = entry[V]{value: value, expires: time.Now().Add(c.ttl)}
+	c.mu.Unlock()
+}
+
+// startJanitor lazily launches a single background goroutine that
+// periodically sweeps expired entries out of the map. Without this, expired
+// entries that are never Set again (e.g. one-off keys in a high-cardinality
+// response cache) sit in the map forever, growing memory unboundedly. Only
+// called from Set, so a disabled cache (ttl <= 0) never starts a janitor.
+func (c *TTLCache[V]) startJanitor() {
+	c.janitorOnce.Do(func() {
+		go c.janitor()
+	})
+}
+
+func (c *TTLCache[V]) janitor() {
+	ticker := time.NewTicker(janitorInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		c.evictExpired()
+	}
+}
+
+// evictExpired removes all entries whose TTL has passed.
+func (c *TTLCache[V]) evictExpired() {
+	now := time.Now()
+	c.mu.Lock()
+	for k, e := range c.m {
+		if now.After(e.expires) {
+			delete(c.m, k)
+		}
+	}
 	c.mu.Unlock()
 }
 

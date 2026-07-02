@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -75,7 +76,7 @@ func main() {
 	flag.StringVar(&globalAddr, "addr", "", "Gateway API address (default: http://localhost:8899 or MCP_GATEWAY_ADDR)")
 	flag.StringVar(&globalToken, "token", "", "Bearer Token (default: MCP_GATEWAY_TOKEN or saved config)")
 	flag.BoolVar(&globalInsecure, "insecure", false, "Skip SSL/TLS verification for self-signed certificates")
-	
+
 	// Keep compatibility with original "cli" subcommand if run on the gateway server
 	flag.Usage = printHelp
 	flag.Parse()
@@ -87,7 +88,7 @@ func main() {
 	}
 
 	cmd := args[0]
-	
+
 	// Load config defaults
 	cfg := loadConfig()
 	if globalAddr == "" {
@@ -126,6 +127,8 @@ func main() {
 		runVault(args[1:])
 	case "token":
 		runToken(args[1:])
+	case "import":
+		runImport(args[1:])
 	case "help":
 		printHelp()
 	default:
@@ -170,6 +173,8 @@ Commands:
     list             List all registered client API tokens
     add              Register a new client API token with scopes and roles
     delete           Delete a client API token
+  import             Import connections/tools from an external API specification
+    openapi          Import a connection + tool endpoints from an OpenAPI spec (file or URL)
 
 Use "mcp-cli <command> --help" or "mcp-cli <command> <subcommand> --help" for detailed arguments.`)
 }
@@ -200,7 +205,7 @@ func saveConfig(cfg Config) {
 	file := getConfigFile()
 	// Ensure directory exists
 	_ = os.MkdirAll(filepath.Dir(file), 0700)
-	
+
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return
@@ -289,7 +294,7 @@ func runLogin(args []string) {
 	fmt.Printf("Logging into MCP Gateway at %s\n", *addr)
 	fmt.Printf("Username: %s\n", username)
 	fmt.Print("Password: ")
-	
+
 	var password string
 	if term.IsTerminal(int(os.Stdin.Fd())) {
 		bytePassword, err := term.ReadPassword(int(os.Stdin.Fd()))
@@ -319,7 +324,7 @@ func runLogin(args []string) {
 	// Direct call over login endpoint
 	client := newHTTPClient()
 	loginUrl := strings.TrimRight(*addr, "/") + "/api/auth/login"
-	
+
 	b, _ := json.Marshal(payload)
 	resp, err := client.Post(loginUrl, "application/json", bytes.NewReader(b))
 	if err != nil {
@@ -444,7 +449,7 @@ func runVerify() {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "  Name\tTarget URL\tStatus\tNotes")
 	fmt.Fprintln(w, "  ----\t----------\t------\t-----")
-	
+
 	for _, c := range conns {
 		status := "OK"
 		notes := "Reachable"
@@ -479,13 +484,13 @@ func runVerify() {
 func runMetrics() {
 	client := newHTTPClient()
 	url := strings.TrimRight(globalAddr, "/") + "/metrics"
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to request metrics: %v\n", err)
 		os.Exit(1)
 	}
-	
+
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Metrics endpoint unreachable: %v\n", err)
@@ -500,35 +505,35 @@ func runMetrics() {
 	}
 
 	lines := strings.Split(string(body), "\n")
-	
+
 	fmt.Println("MCP Gateway Monitoring Telemetry Stats")
 	fmt.Println("======================================")
-	
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "Metric Identifier\tLabels / Tags\tValue")
 	fmt.Fprintln(w, "-----------------\t-------------\t-----")
-	
+
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		parts := strings.Fields(line)
 		if len(parts) < 2 {
 			continue
 		}
-		
+
 		metricName := parts[0]
 		value := parts[1]
-		
+
 		// Pretty print metric labels
 		labelStr := "-"
 		if idx := strings.Index(metricName, "{"); idx != -1 {
 			labelStr = metricName[idx+1 : len(metricName)-1]
 			metricName = metricName[:idx]
 		}
-		
+
 		// Filter relevant MCP business metrics
 		if strings.HasPrefix(metricName, "mcp_") || strings.HasPrefix(metricName, "go_memstats") || strings.HasPrefix(metricName, "promhttp_") {
 			fmt.Fprintf(w, "%s\t%s\t%s\n", metricName, labelStr, value)
@@ -554,7 +559,7 @@ func runLogs() {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "Timestamp\tClient Identity\tTool Name\tStatus\tDuration (ms)\tErrors")
 	fmt.Fprintln(w, "---------\t---------------\t---------\t------\t-------------\t------")
-	
+
 	for _, l := range logs {
 		errMsg := l.ErrorMessage
 		if errMsg == "" {
@@ -590,7 +595,7 @@ func runConnection(args []string) {
 			fmt.Fprintf(os.Stderr, "Error listing connections: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 		fmt.Fprintln(w, "ID\tName\tBase URL\tAuth Type\tPrefix\tEnabled\tDescription")
 		fmt.Fprintln(w, "--\t----\t--------\t---------\t------\t-------\t-----------")
@@ -608,9 +613,9 @@ func runConnection(args []string) {
 		secret := fs.String("secret", "", "Vault secret path lookup reference")
 		prefix := fs.String("prefix", "", "Prefix for generated tool names")
 		disabled := fs.Bool("disabled", false, "Disable the connection immediately on creation")
-		
+
 		_ = fs.Parse(subargs)
-		
+
 		if *name == "" || *url == "" {
 			fmt.Fprintln(os.Stderr, "Error: --name and --url are required parameters.")
 			fs.Usage()
@@ -1006,7 +1011,7 @@ func runToken(args []string) {
 			fmt.Fprintf(os.Stderr, "Error listing tokens: %v\n", err)
 			os.Exit(1)
 		}
-		
+
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 		fmt.Fprintln(w, "Token\tClient Name\tRole\tScopes\tEnabled")
 		fmt.Fprintln(w, "-----\t-----------\t----\t------\t-------")
@@ -1022,9 +1027,9 @@ func runToken(args []string) {
 		role := fs.String("role", "developer", "Client role (admin, developer, etc.)")
 		scopes := fs.String("scopes", "", "Comma-separated tool globs/prefixes (e.g. stripe_*,weather_*)")
 		disabled := fs.Bool("disabled", false, "Disable this token immediately on creation")
-		
+
 		_ = fs.Parse(subargs)
-		
+
 		if *name == "" || *tokenVal == "" {
 			fmt.Fprintln(os.Stderr, "Error: --name and --token are required parameters.")
 			fs.Usage()
@@ -1069,4 +1074,276 @@ func runToken(args []string) {
 		fmt.Fprintf(os.Stderr, "Error: Unknown token subcommand %q\n", subcmd)
 		os.Exit(1)
 	}
+}
+
+// ----------------------------------------
+// Command Implementation: IMPORT
+// ----------------------------------------
+func runImport(args []string) {
+	if len(args) == 0 {
+		fmt.Println("import command usage: mcp-cli import <subcommand> [args]")
+		fmt.Println("Subcommands:")
+		fmt.Println("  openapi   Import a connection + tool endpoints from an OpenAPI spec (file or URL)")
+		return
+	}
+
+	subcmd := args[0]
+	subargs := args[1:]
+
+	switch subcmd {
+	case "openapi":
+		runImportOpenAPI(subargs)
+	default:
+		fmt.Fprintf(os.Stderr, "Error: Unknown import subcommand %q\n", subcmd)
+		os.Exit(1)
+	}
+}
+
+func runImportOpenAPI(args []string) {
+	fs := flag.NewFlagSet("import-openapi", flag.ExitOnError)
+	dryRun := fs.Bool("dry-run", false, "Preview the import without writing a connection or tool endpoints")
+	prefix := fs.String("prefix", "", "Prefix to apply to generated MCP tool names")
+	_ = fs.Parse(args)
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: a file path or http(s) URL to an OpenAPI spec is required.")
+		fmt.Fprintln(os.Stderr, "Usage: mcp-cli import openapi <file-or-url> [--dry-run] [--prefix <p>]")
+		fs.Usage()
+		os.Exit(1)
+	}
+	source := rest[0]
+
+	specBytes, contentType, err := readOpenAPISource(source)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading OpenAPI spec from %q: %v\n", source, err)
+		os.Exit(1)
+	}
+
+	reqPath := "/api/import/openapi"
+	query := url.Values{}
+	if *dryRun {
+		query.Set("dry_run", "true")
+	}
+	if *prefix != "" {
+		query.Set("prefix", *prefix)
+	}
+	if encoded := query.Encode(); encoded != "" {
+		reqPath += "?" + encoded
+	}
+
+	var result map[string]interface{}
+	if err := postRawBody(reqPath, specBytes, contentType, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "Error importing OpenAPI spec: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("OpenAPI Import Summary:")
+	fmt.Println("=======================")
+	fmt.Printf("Source:           %s\n", source)
+	if *dryRun {
+		fmt.Println("Mode:             DRY RUN (no changes were written to the gateway)")
+	} else {
+		fmt.Println("Mode:             APPLY (connection + tool endpoints written to the gateway)")
+	}
+	fmt.Println()
+	printImportSummary(result)
+}
+
+// readOpenAPISource reads an OpenAPI spec from a local file path or an
+// http(s) URL, returning its raw bytes and a best-effort content type.
+func readOpenAPISource(source string) ([]byte, string, error) {
+	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+		client := &http.Client{Timeout: 15 * time.Second}
+		if globalInsecure {
+			client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+		}
+
+		resp, err := client.Get(source)
+		if err != nil {
+			return nil, "", fmt.Errorf("fetch failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, "", fmt.Errorf("fetch failed with status %d: %s", resp.StatusCode, string(data))
+		}
+
+		ct := resp.Header.Get("Content-Type")
+		if ct == "" {
+			ct = contentTypeForSource(source)
+		}
+		return data, ct, nil
+	}
+
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read file: %w", err)
+	}
+	return data, contentTypeForSource(source), nil
+}
+
+// contentTypeForSource guesses a Content-Type from a file path or URL's
+// extension, defaulting to JSON.
+func contentTypeForSource(source string) string {
+	switch strings.ToLower(filepath.Ext(source)) {
+	case ".yaml", ".yml":
+		return "application/yaml"
+	default:
+		return "application/json"
+	}
+}
+
+// postRawBody POSTs a raw byte payload (as opposed to makeRequest's
+// JSON-marshaled payload) using the same auth header and error-handling
+// conventions as the rest of the CLI's authenticated requests.
+func postRawBody(path string, body []byte, contentType string, responseObj interface{}) error {
+	client := newHTTPClient()
+	reqURL := strings.TrimRight(globalAddr, "/") + path
+
+	req, err := http.NewRequest("POST", reqURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create http request: %w", err)
+	}
+
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	req.Header.Set("Content-Type", contentType)
+	if globalToken != "" {
+		req.Header.Set("Authorization", "Bearer "+globalToken)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errResp struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(respBytes, &errResp) == nil && errResp.Error != "" {
+			return fmt.Errorf("API Error (%d): %s", resp.StatusCode, errResp.Error)
+		}
+		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	if responseObj != nil && len(respBytes) > 0 {
+		if err := json.Unmarshal(respBytes, responseObj); err != nil {
+			return fmt.Errorf("failed to decode response payload: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// printImportSummary renders the gateway's import response in the CLI's
+// existing tabular style. It handles both response shapes the gateway's
+// /api/import/openapi endpoint returns:
+//   - apply mode:   {"connection_id", "connection_name", "endpoints_created", "tool_names": [string,...]}
+//   - dry-run mode: {"connection": {"name","base_url","auth_type"}, "tool_count", "tools": [{"tool_name","method","path",...}]}
+//
+// It tolerates missing/renamed fields and always prints the full JSON
+// payload afterward so nothing is lost if the endpoint's shape evolves.
+func printImportSummary(result map[string]interface{}) {
+	if len(result) == 0 {
+		fmt.Println("(Empty response from gateway)")
+		return
+	}
+
+	// Apply-mode response: flat connection_id/connection_name fields plus a
+	// flat list of created tool names.
+	if _, ok := result["connection_id"]; ok {
+		fmt.Printf("Connection ID:    %v\n", valueOrDash(result["connection_id"]))
+		fmt.Printf("Connection Name:  %v\n", valueOrDash(result["connection_name"]))
+		if v, ok := result["endpoints_created"]; ok {
+			fmt.Printf("Endpoints Created: %v\n", v)
+		}
+		if names, ok := result["tool_names"].([]interface{}); ok {
+			fmt.Printf("\nTool Names (%d):\n", len(names))
+			for _, n := range names {
+				fmt.Printf("  - %v\n", n)
+			}
+		}
+	}
+
+	// Dry-run response: nested "connection" object plus a "tools" (or
+	// "endpoints") array of tool preview objects.
+	if conn, ok := result["connection"].(map[string]interface{}); ok {
+		fmt.Printf("Connection Name:  %v\n", valueOrDash(conn["name"]))
+		if id := conn["id"]; id != nil && id != "" {
+			fmt.Printf("Connection ID:    %v\n", id)
+		}
+		fmt.Printf("Base URL:         %v\n", valueOrDash(conn["base_url"]))
+		if authType := conn["auth_type"]; authType != nil && authType != "" {
+			fmt.Printf("Auth Type:        %v\n", authType)
+		}
+		if prefix := conn["tool_prefix"]; prefix != nil && prefix != "" {
+			fmt.Printf("Tool Prefix:      %v\n", prefix)
+		}
+	}
+
+	if tools, ok := result["tools"].([]interface{}); ok {
+		fmt.Println()
+		printToolList(tools)
+	} else if endpoints, ok := result["endpoints"].([]interface{}); ok {
+		fmt.Println()
+		printToolList(endpoints)
+	}
+
+	countLabels := []struct {
+		key   string
+		label string
+	}{
+		{"tool_count", "Tool Count"},
+		{"endpoint_count", "Endpoint Count"},
+		{"created_count", "Created Count"},
+		{"count", "Count"},
+	}
+	for _, cl := range countLabels {
+		if v, ok := result[cl.key]; ok {
+			fmt.Printf("%s:  %v\n", cl.label, v)
+		}
+	}
+
+	fmt.Println("\nFull response:")
+	pretty, err := json.MarshalIndent(result, "", "  ")
+	if err == nil {
+		fmt.Println(string(pretty))
+	}
+}
+
+func printToolList(tools []interface{}) {
+	fmt.Printf("Tool Endpoints (%d):\n", len(tools))
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "  Tool Name\tMethod\tPath")
+	fmt.Fprintln(w, "  ---------\t------\t----")
+	for _, t := range tools {
+		tm, ok := t.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(w, "  %v\t%v\t%v\n", valueOrDash(tm["tool_name"]), valueOrDash(tm["method"]), valueOrDash(tm["path"]))
+	}
+	w.Flush()
+	fmt.Println()
+}
+
+func valueOrDash(v interface{}) interface{} {
+	if v == nil || v == "" {
+		return "-"
+	}
+	return v
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,8 +17,11 @@ import (
 
 	"github.com/calitti/mcp-api-gateway/pkg/auth"
 	"github.com/calitti/mcp-api-gateway/pkg/gateway"
+	"github.com/calitti/mcp-api-gateway/pkg/oauth"
+	"github.com/calitti/mcp-api-gateway/pkg/redaction"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/telemetry"
+	"github.com/calitti/mcp-api-gateway/pkg/toolintegrity"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -54,6 +58,11 @@ type Tool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"inputSchema"`
+	// Meta carries out-of-band tool metadata (e.g. the tool-pinning
+	// definitionHash) under the MCP "_meta" convention. Omitted entirely
+	// when there is nothing to report, so tool-pinning-unaware clients see
+	// no change in shape.
+	Meta map[string]interface{} `json:"_meta,omitempty"`
 }
 
 type CallToolRequest struct {
@@ -101,16 +110,141 @@ type MCPServer struct {
 	mu            sync.RWMutex
 	activeQueries int64
 	corsOrigins   []string
+	maxSessions   int
+	auditCh       chan auditLogEntry
+
+	// oauthValidator, when non-nil (via EnableOAuth), lets resolveAuth accept
+	// a valid OAuth 2.1 access token as an alternative to the master/client
+	// token, in addition to the existing gateway-token auth. Nil (default)
+	// preserves current master/client-token-only behavior.
+	oauthValidator    *oauth.Validator
+	oauthChallengeCfg oauth.Config
+
+	// redactor, when non-nil (via EnableRedaction), masks PII/secrets in
+	// tool-call arguments before execution and in tool results before they
+	// are returned to the client. Nil (default) disables redaction entirely.
+	redactor *redaction.Redactor
+
+	// toolPinningStrict, when true (via SetToolPinningStrict), refuses
+	// tools/call for any tool whose live definition hash no longer matches
+	// the DefinitionHash recorded on the endpoint. False (default) preserves
+	// current behavior: tools/list still reports the hash, but calls are
+	// never blocked on it.
+	toolPinningStrict bool
+}
+
+// auditLogEntry captures a single tools/call audit record for async persistence.
+type auditLogEntry struct {
+	id       string
+	identity string
+	tool     string
+	status   string
+	duration int64
+	errMsg   string
+	// redaction is a "class=count,class=count" summary of any redaction
+	// findings for this call (arguments + result combined). It never
+	// contains matched values. Empty when redaction is disabled or found
+	// nothing.
+	redaction string
+}
+
+// envInt reads a positive integer from the named environment variable,
+// falling back to def if unset, empty, or invalid.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
 }
 
 func NewMCPServer(db *storage.DB, client *gateway.GatewayClient, vp vault.VaultProvider, am *auth.AuthManager, corsOrigins []string) *MCPServer {
-	return &MCPServer{
+	s := &MCPServer{
 		db:          db,
 		client:      client,
 		vault:       vp,
 		authManager: am,
 		sessions:    make(map[string]*Session),
 		corsOrigins: corsOrigins,
+		maxSessions: envInt("MCP_MAX_SESSIONS", 1000),
+		auditCh:     make(chan auditLogEntry, 1000),
+	}
+	// Single background worker drains audit log writes so the hot tools/call
+	// path never blocks on a DB INSERT.
+	go s.auditWorker()
+	return s
+}
+
+// EnableOAuth turns on OAuth 2.1 bearer-token acceptance alongside the
+// existing master/client-token auth: resolveAuth will additionally accept
+// any access token that validates against v (RFC 8707 audience + trusted
+// issuer). challengeCfg is used to build the WWW-Authenticate challenge
+// (RFC 9728 §5.1) on a 401. Off by default — pass v == nil to leave OAuth
+// disabled (equivalent to never calling this method).
+func (s *MCPServer) EnableOAuth(v *oauth.Validator, challengeCfg oauth.Config) {
+	s.oauthValidator = v
+	s.oauthChallengeCfg = challengeCfg
+}
+
+// EnableRedaction turns on PII/secret redaction of tool-call arguments
+// (before execution) and tool results (before the response is returned to
+// the client). Off by default — pass r == nil to leave redaction disabled.
+func (s *MCPServer) EnableRedaction(r *redaction.Redactor) {
+	s.redactor = r
+}
+
+// SetToolPinningStrict controls whether tools/call refuses to execute a
+// tool whose live definition hash (see pkg/toolintegrity) no longer matches
+// the DefinitionHash recorded on its endpoint. tools/list always reports
+// the current hash regardless of this setting. Off by default.
+func (s *MCPServer) SetToolPinningStrict(strict bool) {
+	s.toolPinningStrict = strict
+}
+
+// auditWorker drains s.auditCh and persists each entry via db.LogAudit. It
+// runs for the lifetime of the process (the channel is never closed).
+func (s *MCPServer) auditWorker() {
+	for e := range s.auditCh {
+		// storage.DB.LogAudit has a fixed signature with no dedicated
+		// redaction column, so fold the (value-free) class=count summary
+		// into the existing error_message field rather than dropping it.
+		msg := e.errMsg
+		if e.redaction != "" {
+			if msg != "" {
+				msg = msg + "; redacted: " + e.redaction
+			} else {
+				msg = "redacted: " + e.redaction
+			}
+		}
+		if err := s.db.LogAudit(context.Background(), e.id, e.identity, e.tool, e.status, e.duration, msg); err != nil {
+			log.Printf("audit log write failed for tool %q: %v", e.tool, err)
+		}
+	}
+}
+
+// formatFindings renders redaction findings as a deterministic
+// "class=count,class=count" summary for the audit log. It never includes
+// the matched values themselves — only the detector class and hit count.
+func formatFindings(findings []redaction.Finding) string {
+	if len(findings) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(findings))
+	for _, f := range findings {
+		parts = append(parts, fmt.Sprintf("%s=%d", f.Class, f.Count))
+	}
+	return strings.Join(parts, ",")
+}
+
+// logAuditAsync enqueues an audit entry for background persistence. If the
+// buffer is full, the entry is dropped (logged) rather than blocking the
+// caller's request path.
+func (s *MCPServer) logAuditAsync(entry auditLogEntry) {
+	select {
+	case s.auditCh <- entry:
+	default:
+		log.Printf("audit log dropped (buffer full): tool=%s status=%s identity=%s", entry.tool, entry.status, entry.identity)
 	}
 }
 
@@ -217,21 +351,34 @@ func (s *MCPServer) StartStdioMode(ctx context.Context) {
 }
 
 // resolveAuth maps a presented token to a client identity/role/scopes.
-// Master GATEWAY_TOKEN → admin/*; otherwise an enabled DB client token → its role+scopes.
+// Master GATEWAY_TOKEN → admin/*; an enabled DB client token → its
+// role+scopes; and, when EnableOAuth has been called, a valid OAuth 2.1
+// access token → its scopes, mapped to a non-admin "user" role (OAuth
+// clients can never reach admin_-prefixed tools regardless of the token's
+// own scopes — admin access is only ever granted via the master token or a
+// client token explicitly provisioned with the admin role).
 func (s *MCPServer) resolveAuth(ctx context.Context, token string) (identity, role string, scopes []string, ok bool) {
 	if s.authManager.VerifyGatewayToken(token) {
 		return "master", "admin", []string{"*"}, true
 	}
-	ct, err := s.db.GetClientToken(ctx, token)
-	if err != nil || ct == nil || !ct.Enabled {
-		return "", "", nil, false
+	if ct, err := s.db.GetClientToken(ctx, token); err == nil && ct != nil && ct.Enabled {
+		for _, sc := range strings.Split(ct.Scopes, ",") {
+			if t := strings.TrimSpace(sc); t != "" {
+				scopes = append(scopes, t)
+			}
+		}
+		return ct.ClientName, ct.ClientRole, scopes, true
 	}
-	for _, sc := range strings.Split(ct.Scopes, ",") {
-		if t := strings.TrimSpace(sc); t != "" {
-			scopes = append(scopes, t)
+	if s.oauthValidator != nil {
+		if claims, err := s.oauthValidator.ValidateToken(ctx, token); err == nil {
+			identity = claims.Subject
+			if identity == "" {
+				identity = "oauth-client"
+			}
+			return identity, "user", claims.Scopes, true
 		}
 	}
-	return ct.ClientName, ct.ClientRole, scopes, true
+	return "", "", nil, false
 }
 
 // ServeStreamable implements the MCP Streamable HTTP transport (2025 spec): the
@@ -246,7 +393,7 @@ func (s *MCPServer) ServeStreamable(w http.ResponseWriter, r *http.Request) {
 	}
 	identity, role, scopes, ok := s.resolveAuth(r.Context(), extractToken(r))
 	if !ok {
-		http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
+		s.writeUnauthorized(w)
 		return
 	}
 	var req JSONRPCRequest
@@ -275,7 +422,7 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 
 	clientIdentity, clientRole, clientScopes, ok := s.resolveAuth(r.Context(), token)
 	if !ok {
-		http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
+		s.writeUnauthorized(w)
 		return
 	}
 
@@ -293,6 +440,14 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Vary", "Origin")
 	}
 
+	// Clear the write deadline for this long-lived stream. The server's
+	// global WriteTimeout (set in main.go, ~60s) otherwise terminates every
+	// SSE connection at that mark. Not every ResponseWriter supports this
+	// (e.g. in tests) — log and continue rather than failing the request.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+		log.Printf("SSE: failed to clear write deadline (stream may be time-limited): %v", err)
+	}
+
 	sessionID := uuid.New().String()
 	session := &Session{
 		ID:             sessionID,
@@ -306,6 +461,11 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
+	if len(s.sessions) >= s.maxSessions {
+		s.mu.Unlock()
+		http.Error(w, "Too many active SSE sessions", http.StatusTooManyRequests)
+		return
+	}
 	s.sessions[sessionID] = session
 	s.mu.Unlock()
 
@@ -330,6 +490,17 @@ func (s *MCPServer) ServeSSE(w http.ResponseWriter, r *http.Request) {
 			session.writeEvent(": keepalive\n\n")
 		}
 	}
+}
+
+// writeUnauthorized responds 401 to a failed auth attempt. When OAuth is
+// enabled it also emits the RFC 9728 §5.1 WWW-Authenticate challenge so
+// OAuth-aware clients can discover how to obtain a token; this is additive
+// and does not change behavior for master/client-token-only deployments.
+func (s *MCPServer) writeUnauthorized(w http.ResponseWriter) {
+	if s.oauthValidator != nil {
+		w.Header().Set("WWW-Authenticate", oauth.ChallengeHeader(s.oauthChallengeCfg, "invalid_token"))
+	}
+	http.Error(w, "Unauthorized: Invalid gateway token", http.StatusUnauthorized)
 }
 
 // allowedOrigin returns the request's Origin if it is in the configured allowlist,
@@ -447,23 +618,56 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, cl
 			return resp
 		}
 
+		// Tool-pinning ("rug-pull" defense): if the caller opted into strict
+		// mode, refuse to execute a tool whose live definition no longer
+		// matches the hash it was approved under. An empty stored hash (no
+		// baseline yet) never blocks.
+		if s.toolPinningStrict {
+			changed, checkErr := s.toolDefinitionChanged(ctx, callReq.Name)
+			if checkErr != nil {
+				resp.Error = &JSONRPCError{Code: -32603, Message: checkErr.Error()}
+				return resp
+			}
+			if changed {
+				resp.Error = &JSONRPCError{Code: -32001, Message: fmt.Sprintf("tool %q definition has changed since it was approved; refusing call (strict tool pinning enabled)", callReq.Name)}
+				return resp
+			}
+		}
+
+		// Redact PII/secrets out of the arguments BEFORE execution, so a
+		// value lifted from the LLM's context can't be smuggled out through
+		// a downstream API call.
+		var findings []redaction.Finding
+		if s.redactor != nil && len(callReq.Arguments) > 0 {
+			redactedArgs, argFindings := s.redactor.RedactMap(callReq.Arguments)
+			callReq.Arguments = redactedArgs
+			findings = append(findings, argFindings...)
+		}
+
 		startTime := time.Now()
 		atomic.AddInt64(&s.activeQueries, 1)
 		result, err := s.callTool(ctx, callReq.Name, callReq.Arguments)
 		atomic.AddInt64(&s.activeQueries, -1)
 		duration := time.Since(startTime).Milliseconds()
 
+		// Redact the result body before it ever reaches the client.
+		if err == nil && s.redactor != nil {
+			redactedResult, resultFindings := s.redactor.RedactBytes([]byte(result))
+			result = string(redactedResult)
+			findings = append(findings, resultFindings...)
+		}
+
 		logID := uuid.New().String()
 		if err != nil {
 			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
-			_ = s.db.LogAudit(ctx, logID, clientIdentity, callReq.Name, "failure", duration, err.Error())
+			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "failure", duration: duration, errMsg: err.Error(), redaction: formatFindings(findings)})
 		} else {
 			resp.Result = CallToolResponse{
 				Content: []Content{
 					{Type: "text", Text: result},
 				},
 			}
-			_ = s.db.LogAudit(ctx, logID, clientIdentity, callReq.Name, "success", duration, "")
+			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "success", duration: duration, redaction: formatFindings(findings)})
 		}
 
 	default:
@@ -524,6 +728,7 @@ func (s *MCPServer) listTools(ctx context.Context, clientRole string, clientScop
 			Name:        toolName,
 			Description: ep.ToolDescription,
 			InputSchema: schemaMap,
+			Meta:        toolMeta(ep),
 		})
 	}
 
@@ -585,6 +790,87 @@ func (s *MCPServer) listTools(ctx context.Context, clientRole string, clientScop
 	return mcpTools, nil
 }
 
+// findEndpoint resolves an exposed tool name (post tool-prefix) to its
+// endpoint and owning connection, applying the same enabled/prefix
+// resolution rules as listTools. It returns (nil, nil, nil) — not an error
+// — when no enabled endpoint matches; callers decide how to report that.
+func (s *MCPServer) findEndpoint(ctx context.Context, name string) (*storage.APIEndpoint, *storage.APIConnection, error) {
+	endpoints, err := s.db.GetAllEndpoints(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load endpoints: %w", err)
+	}
+	conns, err := s.db.GetConnections(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load connections: %w", err)
+	}
+
+	connMap := make(map[string]*storage.APIConnection)
+	for _, c := range conns {
+		connMap[c.ID] = c
+	}
+
+	for _, ep := range endpoints {
+		conn, exists := connMap[ep.ConnectionID]
+		if !exists || !conn.Enabled {
+			continue
+		}
+
+		resolvedName := ep.ToolName
+		if conn.ToolPrefix != "" {
+			resolvedName = conn.ToolPrefix + resolvedName
+		}
+
+		if resolvedName == name {
+			return ep, conn, nil
+		}
+	}
+
+	return nil, nil, nil
+}
+
+// toolDefinitionChanged reports whether name's live endpoint definition
+// hashes differently than the DefinitionHash recorded when it was last
+// approved/pinned (pkg/toolintegrity — the "rug-pull" defense). Admin
+// management tools have no backing endpoint and are never considered
+// changed. A missing endpoint or an empty stored hash also never counts as
+// "changed" — there is nothing to compare against, and callTool's own
+// not-found handling covers the missing-endpoint case.
+func (s *MCPServer) toolDefinitionChanged(ctx context.Context, name string) (bool, error) {
+	if strings.HasPrefix(name, "admin_") {
+		return false, nil
+	}
+	ep, _, err := s.findEndpoint(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	if ep == nil {
+		return false, nil
+	}
+	def := toolintegrity.ToolDef{
+		Name:             name,
+		Description:      ep.ToolDescription,
+		Method:           ep.Method,
+		Path:             ep.Path,
+		ParametersSchema: ep.ParametersSchema,
+	}
+	return toolintegrity.Changed(ep.DefinitionHash, def), nil
+}
+
+// toolMeta builds the tools/list "_meta" payload for an endpoint-backed
+// tool, surfacing its content-hash pin (and version, if tracked) so
+// integrity-aware clients can detect drift between listing and calling a
+// tool. Returns nil (omitted entirely) when the endpoint has no hash yet.
+func toolMeta(ep *storage.APIEndpoint) map[string]interface{} {
+	if ep.DefinitionHash == "" {
+		return nil
+	}
+	meta := map[string]interface{}{"definitionHash": ep.DefinitionHash}
+	if ep.Version != 0 {
+		meta["version"] = ep.Version
+	}
+	return meta
+}
+
 func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]interface{}) (string, error) {
 	startTime := time.Now()
 
@@ -602,47 +888,13 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]i
 	if strings.HasPrefix(name, "admin_") {
 		result, execErr = s.handleAdminTool(ctx, name, args)
 	} else {
-		// Fetch endpoints and connections dynamically
-		endpoints, err := s.db.GetAllEndpoints(ctx)
+		matchedEP, matchedConn, err := s.findEndpoint(ctx, name)
 		if err != nil {
-			execErr = fmt.Errorf("failed to load endpoints: %w", err)
+			execErr = err
+		} else if matchedEP == nil {
+			execErr = fmt.Errorf("tool %q not found or target connection is disabled", name)
 		} else {
-			conns, err := s.db.GetConnections(ctx)
-			if err != nil {
-				execErr = fmt.Errorf("failed to load connections: %w", err)
-			} else {
-				connMap := make(map[string]*storage.APIConnection)
-				for _, c := range conns {
-					connMap[c.ID] = c
-				}
-
-				var matchedEP *storage.APIEndpoint
-				var matchedConn *storage.APIConnection
-
-				for _, ep := range endpoints {
-					conn, exists := connMap[ep.ConnectionID]
-					if !exists || !conn.Enabled {
-						continue
-					}
-
-					resolvedName := ep.ToolName
-					if conn.ToolPrefix != "" {
-						resolvedName = conn.ToolPrefix + resolvedName
-					}
-
-					if resolvedName == name {
-						matchedEP = ep
-						matchedConn = conn
-						break
-					}
-				}
-
-				if matchedEP == nil {
-					execErr = fmt.Errorf("tool %q not found or target connection is disabled", name)
-				} else {
-					result, execErr = s.client.ExecuteCall(ctx, matchedConn, matchedEP, args)
-				}
-			}
+			result, execErr = s.client.ExecuteCall(ctx, matchedConn, matchedEP, args)
 		}
 	}
 
@@ -676,19 +928,45 @@ func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]i
 	return result, execErr
 }
 
+// requireStringArg extracts a required, non-empty string argument from an
+// admin tool call, returning a clear error instead of silently coercing a
+// missing/wrong-typed value (e.g. via fmt.Sprintf("%v", nil) == "<nil>").
+func requireStringArg(args map[string]interface{}, key string) (string, error) {
+	v, ok := args[key].(string)
+	if !ok || v == "" {
+		return "", fmt.Errorf("missing or invalid required argument %q", key)
+	}
+	return v, nil
+}
+
+// optionalStringArg extracts an optional string argument, returning "" if
+// absent. It does not error on a wrong type — it simply treats it as unset.
+func optionalStringArg(args map[string]interface{}, key string) string {
+	v, _ := args[key].(string)
+	return v
+}
+
 func (s *MCPServer) handleAdminTool(ctx context.Context, name string, args map[string]interface{}) (string, error) {
 	switch name {
 	case "admin_add_connection":
+		connName, err := requireStringArg(args, "name")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_connection: %w", err)
+		}
+		baseURL, err := requireStringArg(args, "base_url")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_connection: %w", err)
+		}
+		authType, err := requireStringArg(args, "auth_type")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_connection: %w", err)
+		}
 		conn := &storage.APIConnection{
-			Name:     fmt.Sprintf("%v", args["name"]),
-			BaseURL:  fmt.Sprintf("%v", args["base_url"]),
-			AuthType: fmt.Sprintf("%v", args["auth_type"]),
-		}
-		if ref, ok := args["auth_secret_ref"]; ok {
-			conn.AuthSecretRef = fmt.Sprintf("%v", ref)
-		}
-		if prefix, ok := args["tool_prefix"]; ok {
-			conn.ToolPrefix = fmt.Sprintf("%v", prefix)
+			Name:          connName,
+			BaseURL:       baseURL,
+			AuthType:      authType,
+			AuthSecretRef: optionalStringArg(args, "auth_secret_ref"),
+			ToolPrefix:    optionalStringArg(args, "tool_prefix"),
 		}
 		conn.Enabled = true
 		if en, ok := args["enabled"].(bool); ok {
@@ -701,18 +979,34 @@ func (s *MCPServer) handleAdminTool(ctx context.Context, name string, args map[s
 		return fmt.Sprintf("Successfully registered connection %q. ID: %s", conn.Name, conn.ID), nil
 
 	case "admin_add_endpoint":
+		connectionID, err := requireStringArg(args, "connection_id")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_endpoint: %w", err)
+		}
+		toolName, err := requireStringArg(args, "tool_name")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_endpoint: %w", err)
+		}
+		toolDescription, err := requireStringArg(args, "tool_description")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_endpoint: %w", err)
+		}
+		path, err := requireStringArg(args, "path")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_endpoint: %w", err)
+		}
+		method, err := requireStringArg(args, "method")
+		if err != nil {
+			return "", fmt.Errorf("admin_add_endpoint: %w", err)
+		}
 		ep := &storage.APIEndpoint{
-			ConnectionID:    fmt.Sprintf("%v", args["connection_id"]),
-			ToolName:        fmt.Sprintf("%v", args["tool_name"]),
-			ToolDescription: fmt.Sprintf("%v", args["tool_description"]),
-			Path:            fmt.Sprintf("%v", args["path"]),
-			Method:          fmt.Sprintf("%v", args["method"]),
-		}
-		if schema, ok := args["parameters_schema"]; ok {
-			ep.ParametersSchema = fmt.Sprintf("%v", schema)
-		}
-		if temp, ok := args["template"]; ok {
-			ep.Template = fmt.Sprintf("%v", temp)
+			ConnectionID:     connectionID,
+			ToolName:         toolName,
+			ToolDescription:  toolDescription,
+			Path:             path,
+			Method:           method,
+			ParametersSchema: optionalStringArg(args, "parameters_schema"),
+			Template:         optionalStringArg(args, "template"),
 		}
 		ep.ID = uuid.New().String()
 		if err := s.db.SaveEndpoint(ctx, ep); err != nil {
@@ -721,8 +1015,14 @@ func (s *MCPServer) handleAdminTool(ctx context.Context, name string, args map[s
 		return fmt.Sprintf("Successfully registered tool %q. ID: %s", ep.ToolName, ep.ID), nil
 
 	case "admin_register_vault_secret":
-		key := fmt.Sprintf("%v", args["key"])
-		val := fmt.Sprintf("%v", args["value"])
+		key, err := requireStringArg(args, "key")
+		if err != nil {
+			return "", fmt.Errorf("admin_register_vault_secret: %w", err)
+		}
+		val, err := requireStringArg(args, "value")
+		if err != nil {
+			return "", fmt.Errorf("admin_register_vault_secret: %w", err)
+		}
 		if err := s.vault.SetSecret(ctx, key, val); err != nil {
 			return "", fmt.Errorf("failed to register vault secret: %w", err)
 		}

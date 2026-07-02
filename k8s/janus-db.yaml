@@ -39,6 +39,11 @@ spec:
       containers:
       - name: postgres
         image: postgres:15-alpine
+        # Raise max_connections above the stock default (100) to match the fleet at
+        # HPA scale: pairs with the lowered per-pod DB_MAX_OPEN_CONNS default (10) in
+        # pkg/config/config.go — 10 conns/pod * 10 pods (HPA max) = 100, leaving
+        # headroom under this 200 ceiling for idle conns and out-of-band admin access.
+        args: ["-c", "max_connections=200"]
         ports:
         - containerPort: 5432
           name: postgres

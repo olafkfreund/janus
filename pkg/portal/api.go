@@ -1,7 +1,9 @@
 package portal
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
@@ -9,8 +11,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/big"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -19,8 +25,10 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/auth"
 	"github.com/calitti/mcp-api-gateway/pkg/config"
 	"github.com/calitti/mcp-api-gateway/pkg/mcp"
+	"github.com/calitti/mcp-api-gateway/pkg/openapiimport"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -65,6 +73,10 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/endpoints", admin(p.handleEndpoints))
 	mux.HandleFunc("/api/endpoints/", admin(p.handleEndpoints))
 
+	// OpenAPI Import — parses an OpenAPI 3.x spec into a connection + tool
+	// endpoints. Supports a dry-run preview (?dry_run=true) that makes no writes.
+	mux.HandleFunc("/api/import/openapi", admin(p.handleOpenAPIImport))
+
 	// Vault Secrets Management
 	mux.HandleFunc("/api/vault", admin(p.handleVault))
 
@@ -83,9 +95,13 @@ func (p *PortalServer) RegisterRoutes(mux *http.ServeMux) {
 	// OpenAPI unified reference
 	mux.HandleFunc("/api/openapi.json", admin(p.handleOpenAPI))
 
-	// Mock Downstream APIs for LCH DPG & Collateral services
-	mux.HandleFunc("/api/mock/dpg/trade-volume", p.handleMockTradeVolume)
-	mux.HandleFunc("/api/mock/collateral/non-cash", p.handleMockNonCashCollateral)
+	// Mock Downstream APIs for LCH DPG & Collateral services.
+	// These are unauthenticated demo fixtures — only expose them when explicitly
+	// enabled for a demo/dev environment, never in a default (production) deploy.
+	if strings.EqualFold(os.Getenv("ENABLE_DEMO_ENDPOINTS"), "true") {
+		mux.HandleFunc("/api/mock/dpg/trade-volume", p.handleMockTradeVolume)
+		mux.HandleFunc("/api/mock/collateral/non-cash", p.handleMockNonCashCollateral)
+	}
 
 	// Serving the SPA Frontend
 	staticFS, err := fs.Sub(assets, "static")
@@ -202,6 +218,249 @@ func audienceContains(aud interface{}, clientID string) bool {
 	return false
 }
 
+// oidcHTTPClient returns an HTTP client with a bounded timeout for all outbound
+// OIDC calls (token exchange, discovery, JWKS). Never use http.DefaultClient
+// (no timeout) for these.
+func oidcHTTPClient() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
+// jwksCacheEntry holds the RSA signing keys published by an issuer, keyed by kid.
+type jwksCacheEntry struct {
+	keys      map[string]*rsa.PublicKey
+	fetchedAt time.Time
+}
+
+const jwksCacheTTL = 5 * time.Minute
+
+var (
+	jwksCacheMu sync.Mutex
+	jwksCache   = map[string]*jwksCacheEntry{}
+)
+
+// fetchJWKS resolves and returns the issuer's RSA signing keys (by kid). It
+// discovers the jwks_uri from the issuer's OIDC configuration document, fetches
+// the JWKS, and caches the result in-memory for a short TTL. The issuer (and the
+// discovered jwks_uri) must be https://.
+func fetchJWKS(ctx context.Context, issuer string) (map[string]*rsa.PublicKey, error) {
+	issuer = strings.TrimSuffix(issuer, "/")
+	if !strings.HasPrefix(issuer, "https://") {
+		return nil, fmt.Errorf("oidc issuer must be https, got %q", issuer)
+	}
+
+	jwksCacheMu.Lock()
+	if e, ok := jwksCache[issuer]; ok && time.Since(e.fetchedAt) < jwksCacheTTL {
+		keys := e.keys
+		jwksCacheMu.Unlock()
+		return keys, nil
+	}
+	jwksCacheMu.Unlock()
+
+	client := oidcHTTPClient()
+
+	jwksURI, err := fetchJWKSURI(ctx, client, issuer+"/.well-known/openid-configuration")
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasPrefix(jwksURI, "https://") {
+		return nil, fmt.Errorf("oidc jwks_uri must be https, got %q", jwksURI)
+	}
+
+	keys, err := fetchJWKSKeys(ctx, client, jwksURI)
+	if err != nil {
+		return nil, err
+	}
+
+	jwksCacheMu.Lock()
+	jwksCache[issuer] = &jwksCacheEntry{keys: keys, fetchedAt: time.Now()}
+	jwksCacheMu.Unlock()
+	return keys, nil
+}
+
+// fetchJWKSURI reads the OIDC discovery document and returns its jwks_uri.
+func fetchJWKSURI(ctx context.Context, client *http.Client, discoveryURL string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("build oidc discovery request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch oidc discovery: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("oidc discovery returned HTTP %d", resp.StatusCode)
+	}
+	var doc struct {
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
+		return "", fmt.Errorf("decode oidc discovery: %w", err)
+	}
+	if doc.JWKSURI == "" {
+		return "", fmt.Errorf("oidc discovery document missing jwks_uri")
+	}
+	return doc.JWKSURI, nil
+}
+
+// fetchJWKSKeys fetches a JWKS document and parses its RSA signing keys by kid.
+func fetchJWKSKeys(ctx context.Context, client *http.Client, jwksURI string) (map[string]*rsa.PublicKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURI, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build jwks request: %w", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch jwks: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("jwks endpoint returned HTTP %d", resp.StatusCode)
+	}
+	var jwks struct {
+		Keys []struct {
+			Kty string `json:"kty"`
+			Kid string `json:"kid"`
+			Use string `json:"use"`
+			N   string `json:"n"`
+			E   string `json:"e"`
+		} `json:"keys"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&jwks); err != nil {
+		return nil, fmt.Errorf("decode jwks: %w", err)
+	}
+	keys := make(map[string]*rsa.PublicKey)
+	for _, k := range jwks.Keys {
+		if k.Kty != "RSA" {
+			continue
+		}
+		if k.Use != "" && k.Use != "sig" {
+			continue
+		}
+		pub, err := rsaPublicKeyFromJWK(k.N, k.E)
+		if err != nil {
+			continue
+		}
+		keys[k.Kid] = pub
+	}
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("jwks contained no usable RSA signing keys")
+	}
+	return keys, nil
+}
+
+// rsaPublicKeyFromJWK builds an RSA public key from the base64url-encoded
+// modulus (n) and exponent (e) of a JWK.
+func rsaPublicKeyFromJWK(nB64, eB64 string) (*rsa.PublicKey, error) {
+	nBytes, err := base64.RawURLEncoding.DecodeString(nB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode jwk modulus: %w", err)
+	}
+	eBytes, err := base64.RawURLEncoding.DecodeString(eB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode jwk exponent: %w", err)
+	}
+	e := new(big.Int).SetBytes(eBytes)
+	if !e.IsInt64() || e.Int64() < 2 {
+		return nil, fmt.Errorf("invalid jwk exponent")
+	}
+	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: int(e.Int64())}, nil
+}
+
+// verifyIDToken verifies an OIDC ID token's signature against the issuer's JWKS
+// and validates the standard claims (iss, aud, exp) plus nonce when one was
+// requested. It pins the signing algorithm to RSA (RS256/384/512) so "none" and
+// symmetric algorithms are rejected. The verified claims are returned on success.
+func (p *PortalServer) verifyIDToken(ctx context.Context, rawIDToken, expectedNonce string) (jwt.MapClaims, error) {
+	keys, err := fetchJWKS(ctx, p.config.OIDCIssuer)
+	if err != nil {
+		return nil, fmt.Errorf("resolve issuer signing keys: %w", err)
+	}
+
+	keyfunc := func(token *jwt.Token) (interface{}, error) {
+		// Pin to RSA; never accept "none" or HMAC signing.
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", token.Header["alg"])
+		}
+		kid, _ := token.Header["kid"].(string)
+		if kid == "" {
+			if len(keys) == 1 {
+				for _, k := range keys {
+					return k, nil
+				}
+			}
+			return nil, fmt.Errorf("id token missing kid")
+		}
+		key, ok := keys[kid]
+		if !ok {
+			return nil, fmt.Errorf("no jwks key for kid %q", kid)
+		}
+		return key, nil
+	}
+
+	claims := jwt.MapClaims{}
+	if _, err := jwt.ParseWithClaims(rawIDToken, claims, keyfunc,
+		jwt.WithValidMethods([]string{"RS256", "RS384", "RS512"}),
+		jwt.WithExpirationRequired(),
+	); err != nil {
+		return nil, fmt.Errorf("verify id token: %w", err)
+	}
+
+	// Issuer must match the configured issuer (ignoring a trailing slash).
+	if iss, _ := claims["iss"].(string); strings.TrimSuffix(iss, "/") != strings.TrimSuffix(p.config.OIDCIssuer, "/") {
+		return nil, fmt.Errorf("id token issuer mismatch")
+	}
+	// Audience must contain our client ID.
+	if !audienceContains(claims["aud"], p.config.OIDCClientID) {
+		return nil, fmt.Errorf("id token audience mismatch")
+	}
+	// Nonce must match when one was requested.
+	if expectedNonce != "" {
+		n, _ := claims["nonce"].(string)
+		if n == "" || subtle.ConstantTimeCompare([]byte(n), []byte(expectedNonce)) != 1 {
+			return nil, fmt.Errorf("id token nonce mismatch")
+		}
+	}
+	return claims, nil
+}
+
+// hostIsInternal reports whether the URL's host is, or resolves to, a private,
+// loopback, link-local, or unspecified IP address. Parse/resolution failures
+// are treated as internal (fail closed) so ambiguous targets are not probed.
+func hostIsInternal(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return true
+	}
+	host := u.Hostname()
+	if host == "" {
+		return true
+	}
+
+	var addrs []netip.Addr
+	if a, err := netip.ParseAddr(host); err == nil {
+		addrs = append(addrs, a.Unmap())
+	} else {
+		ips, err := net.LookupIP(host)
+		if err != nil || len(ips) == 0 {
+			return true
+		}
+		for _, ip := range ips {
+			if a, ok := netip.AddrFromSlice(ip); ok {
+				addrs = append(addrs, a.Unmap())
+			}
+		}
+	}
+
+	for _, a := range addrs {
+		if a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() ||
+			a.IsLinkLocalMulticast() || a.IsUnspecified() {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *PortalServer) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	if p.config.OIDCIssuer == "" {
 		http.Error(w, `{"error":"SSO/OIDC not configured"}`, http.StatusBadRequest)
@@ -266,7 +525,19 @@ func (p *PortalServer) handleSSOCallback(w http.ResponseWriter, r *http.Request)
 	formVals.Set("client_id", p.config.OIDCClientID)
 	formVals.Set("client_secret", p.config.OIDCClientSecret)
 
-	resp, err := http.PostForm(tokenURL, formVals)
+	// Use a bounded-timeout client so a slow/unresponsive IdP cannot hang this
+	// request goroutine indefinitely (http.DefaultClient has no timeout).
+	exchangeCtx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	tokenReq, err := http.NewRequestWithContext(exchangeCtx, http.MethodPost, tokenURL, strings.NewReader(formVals.Encode()))
+	if err != nil {
+		http.Redirect(w, r, "/login?error=sso-exchange-failed", http.StatusFound)
+		return
+	}
+	tokenReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tokenReq.Header.Set("Accept", "application/json")
+
+	resp, err := oidcHTTPClient().Do(tokenReq)
 	if err != nil {
 		http.Redirect(w, r, "/login?error=sso-exchange-failed", http.StatusFound)
 		return
@@ -287,45 +558,22 @@ func (p *PortalServer) handleSSOCallback(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Extract and validate claims from the ID token. NOTE: signature verification
-	// against the issuer JWKS is a recommended follow-up; the token is obtained
-	// server-to-server over TLS directly from the IdP token endpoint, and the
-	// issuer / audience / expiry claims are validated below.
+	// Verify the ID token: its signature must validate against the issuer's JWKS
+	// (fetched via OIDC discovery), and the standard claims (iss/aud/exp) must
+	// hold. Never trust the payload without checking the signature.
 	username := "sso-user"
 	if tokenResp.IDToken == "" {
 		http.Redirect(w, r, "/login?error=sso-missing-id-token", http.StatusFound)
 		return
 	}
 
-	parts := strings.Split(tokenResp.IDToken, ".")
-	if len(parts) < 2 {
-		http.Redirect(w, r, "/login?error=sso-malformed-id-token", http.StatusFound)
-		return
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	verifyCtx, cancelVerify := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancelVerify()
+	// No nonce is issued in the auth request today; pass "" to skip the nonce
+	// check. If a nonce is later added to handleSSOLogin, thread it through here.
+	claims, err := p.verifyIDToken(verifyCtx, tokenResp.IDToken, "")
 	if err != nil {
-		http.Redirect(w, r, "/login?error=sso-parse-failed", http.StatusFound)
-		return
-	}
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		http.Redirect(w, r, "/login?error=sso-parse-failed", http.StatusFound)
-		return
-	}
-
-	// Validate issuer.
-	if iss, _ := claims["iss"].(string); strings.TrimSuffix(iss, "/") != strings.TrimSuffix(p.config.OIDCIssuer, "/") {
-		http.Redirect(w, r, "/login?error=sso-issuer-mismatch", http.StatusFound)
-		return
-	}
-	// Validate audience contains our client ID.
-	if !audienceContains(claims["aud"], p.config.OIDCClientID) {
-		http.Redirect(w, r, "/login?error=sso-audience-mismatch", http.StatusFound)
-		return
-	}
-	// Validate expiry.
-	if exp, ok := claims["exp"].(float64); !ok || time.Now().Unix() >= int64(exp) {
-		http.Redirect(w, r, "/login?error=sso-token-expired", http.StatusFound)
+		http.Redirect(w, r, "/login?error=sso-id-token-invalid", http.StatusFound)
 		return
 	}
 
@@ -466,6 +714,122 @@ func (p *PortalServer) handleEndpoints(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 
+// openAPIImportToolPreview is the dry-run preview shape for a single tool
+// that an OpenAPI import would create.
+type openAPIImportToolPreview struct {
+	ToolName         string `json:"tool_name"`
+	ToolDescription  string `json:"tool_description"`
+	Path             string `json:"path"`
+	Method           string `json:"method"`
+	ParametersSchema string `json:"parameters_schema"`
+}
+
+// handleOpenAPIImport parses an OpenAPI 3.x spec (JSON or YAML) from the
+// request body into a connection and its tool endpoints. With
+// ?dry_run=true it returns a preview of what would be created and makes no
+// writes; otherwise it persists the connection and endpoints exactly as
+// handleConnections/handleEndpoints do and returns a creation summary.
+// ?prefix= is passed through to the parser as a tool-name prefix.
+func (p *PortalServer) handleOpenAPIImport(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Cap the spec size to guard against abusive uploads; OpenAPI documents
+	// are text and rarely approach this size even for large APIs.
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+	if err != nil {
+		http.Error(w, `{"error":"failed to read request body"}`, http.StatusBadRequest)
+		return
+	}
+	if len(body) == 0 {
+		http.Error(w, `{"error":"request body is empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	prefix := r.URL.Query().Get("prefix")
+	dryRun := strings.EqualFold(r.URL.Query().Get("dry_run"), "true")
+
+	parsed, err := openapiimport.Parse(body, openapiimport.Options{ToolNamePrefix: prefix})
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	if parsed.Name == "" || parsed.BaseURL == "" {
+		http.Error(w, `{"error":"OpenAPI spec is missing a usable info.title or servers[0].url"}`, http.StatusBadRequest)
+		return
+	}
+
+	if dryRun {
+		tools := make([]openAPIImportToolPreview, 0, len(parsed.Endpoints))
+		for _, pe := range parsed.Endpoints {
+			tools = append(tools, openAPIImportToolPreview{
+				ToolName:         pe.ToolName,
+				ToolDescription:  pe.ToolDescription,
+				Path:             pe.Path,
+				Method:           pe.Method,
+				ParametersSchema: pe.ParametersSchema,
+			})
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"dry_run": true,
+			"connection": map[string]interface{}{
+				"name":      parsed.Name,
+				"base_url":  parsed.BaseURL,
+				"auth_type": parsed.AuthType,
+			},
+			"tool_count": len(tools),
+			"tools":      tools,
+		})
+		return
+	}
+
+	// Persist: construct the connection/endpoint structs the same way
+	// handleConnections/handleEndpoints do (generated UUID, SaveConnection
+	// then SaveEndpoint per tool) so imported data behaves identically to
+	// data entered through the existing admin API.
+	conn := storage.APIConnection{
+		ID:       uuid.New().String(),
+		Name:     parsed.Name,
+		BaseURL:  parsed.BaseURL,
+		AuthType: parsed.AuthType,
+		Enabled:  true,
+	}
+	if err := p.db.SaveConnection(r.Context(), &conn); err != nil {
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	createdTools := make([]string, 0, len(parsed.Endpoints))
+	for _, pe := range parsed.Endpoints {
+		ep := storage.APIEndpoint{
+			ID:               uuid.New().String(),
+			ConnectionID:     conn.ID,
+			ToolName:         pe.ToolName,
+			ToolDescription:  pe.ToolDescription,
+			Path:             pe.Path,
+			Method:           pe.Method,
+			ParametersSchema: pe.ParametersSchema,
+		}
+		if err := p.db.SaveEndpoint(r.Context(), &ep); err != nil {
+			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			return
+		}
+		createdTools = append(createdTools, ep.ToolName)
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"dry_run":           false,
+		"connection_id":     conn.ID,
+		"connection_name":   conn.Name,
+		"endpoints_created": len(createdTools),
+		"tool_names":        createdTools,
+	})
+}
+
 func (p *PortalServer) handleVault(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -581,6 +945,17 @@ func (p *PortalServer) handleOperationalStats(w http.ResponseWriter, r *http.Req
 
 			if !c.Enabled {
 				h.Status = "DISABLED"
+				h.LatencyMS = 0
+				healths[idx] = h
+				return
+			}
+
+			// Egress guard: refuse to probe internal/private addresses. This
+			// admin-triggered health check must not become an internal port
+			// scanner (the gateway's own SSRF guard is package-private, so this
+			// is a minimal best-effort check on the resolved target).
+			if hostIsInternal(c.BaseURL) {
+				h.Status = "BLOCKED (internal address)"
 				h.LatencyMS = 0
 				healths[idx] = h
 				return
