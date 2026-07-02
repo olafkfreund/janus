@@ -26,6 +26,26 @@ downstream-credential exfiltration by any authenticated user.
 
 ---
 
+## Addendum — security capabilities now available
+
+Since this review, the following defense-in-depth features have been added (all configurable; off by
+default unless noted). They augment — not replace — the existing master/client-token auth model.
+
+- **OAuth 2.1 resource server** (`OAUTH_ENABLED=true`) — advertises protected-resource metadata at
+  `GET /.well-known/oauth-protected-resource` (RFC 9728), issues `WWW-Authenticate` challenges, and
+  validates **audience-bound (RFC 8707)** JWT access tokens against the configured authorization
+  servers' JWKS (`OAUTH_RESOURCE_URI`, `OAUTH_AUTHORIZATION_SERVERS`, `OAUTH_SCOPES_SUPPORTED`).
+- **Tool-definition hash pinning** (`TOOL_PINNING_STRICT=true`) — each tool exposes a SHA-256
+  `definitionHash` + `version` in `tools/list`; strict mode blocks calls to a tool whose definition
+  changed since approval (rug-pull / tool-poisoning defense).
+- **PII/secret redaction (DLP)** (`REDACTION_ENABLED=true`) — masks emails, Luhn-validated cards,
+  JWTs, AWS keys, API keys, and IBANs in tool arguments and downstream responses before they reach
+  the LLM; redaction events are audit-logged as class + count only (never the value).
+- **Encrypted `local` vault** — the file-backed vault is now **AES-256-GCM** encrypted at rest
+  (see **M5**, addressed below).
+
+---
+
 ## CRITICAL findings
 
 ### C1. Hardcoded fallback secrets (auth bypass by default)
@@ -169,8 +189,10 @@ and re-verify on each POST, or require the token on `/messages` too.
   Bind to an internal port or require auth.
 - **M4. `/api/settings` info disclosure** (`api.go:416-426`) — returns database path, vault paths,
   OIDC client ID, cert paths to any authed user. Minimize.
-- **M5. Secrets at rest unencrypted (local vault)** — `pkg/vault/vault.go` stores secrets as plain
-  JSON (`0600`). Acceptable only for air-gapped/dev; document and/or encrypt.
+- **M5. Secrets at rest unencrypted (local vault)** — ✅ **Addressed.** The `local` vault now encrypts
+  its file with **AES-256-GCM** (key from `VAULT_ENCRYPTION_KEY`, falling back to `JWT_SECRET`), and
+  transparently migrates any pre-existing plaintext file to ciphertext on first read. It previously
+  stored secrets as plain JSON (`0600`).
 - **M6. Client tokens stored in plaintext** — `client_tokens.token` is the raw bearer value and the
   PK (`storage/db.go`). A DB read = all tokens. Store a hash; look up by hash.
 - **M7. Password compare not constant-time** (`api.go:129`, `==`). Minor timing oracle (mooted by

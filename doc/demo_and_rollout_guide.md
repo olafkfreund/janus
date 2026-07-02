@@ -75,8 +75,20 @@ To onboard hundreds of LCH Group developers and clearing members securely and ef
 ### Web Portal Integration (SSE)
 *   Deploy a cluster of gateway containers to Customer's EKS.
 *   Enforce **mTLS (Mutual TLS)** for all incoming connections.
-*   Configure the gateway to authenticate developers via **OIDC (Okta/Active Directory)**.
+*   Configure the **portal** to authenticate administrators via **OIDC (Okta/Active Directory)**.
+*   For **MCP client auth**, choose per team: Janus **client tokens** (hashed-at-rest, scoped by tool-name glob), or the **OAuth 2.1 resource server** (`OAUTH_ENABLED=true`) so developers present their existing IdP **audience-bound** access tokens directly on `/mcp` (RFC 9728 discovery + `WWW-Authenticate` challenge + RFC 8707 `aud` validation, fail-closed). Both coexist — see [OAuth 2.1 Resource Server](oauth_resource_server.html).
 *   Developers query tools over the central gateway URL via SSE (`/sse` endpoint). The database and vaults are stored in RDS and AWS Secrets Manager, eliminating local files.
+
+### Onboarding member/business-unit APIs at scale (OpenAPI import)
+Rather than hand-mapping each downstream API, platform engineers onboard any API that ships an OpenAPI
+3.x description in one command, namespacing it under a per-unit prefix:
+```bash
+# Preview, then apply — generates a connection + one MCP tool per operation
+mcp-cli import openapi https://unit-api.internal/openapi.json --dry-run --prefix lchdata_
+mcp-cli import openapi https://unit-api.internal/openapi.json --prefix lchdata_
+```
+Credentials are never imported — register the secret in the vault afterward and set the connection's
+`auth_secret_ref`. See the [OpenAPI → MCP Import](openapi_import.html) guide.
 
 ### Desktop Distribution (Stdio Configuration Script)
 *   For developers running local IDE tools (Claude Desktop, VS Code Copilot extensions, Codex wrappers):
@@ -117,7 +129,9 @@ When a user asks: *"Check MEM-LCH-002 collateral and draft a compliance report."
         [{"isin":"US912828GD97","market_value_eur":25000000,"haircut_pct":2}]
         ```
     *   LLM retrieves current Treasury yields: `3.690%`.
-3.  **Security Auditing**: The gateway tracks the token, logs the duration, and registers the transaction in the RDS audit log.
+3.  **Security Auditing & Governance**: The gateway tracks the token, logs the duration, and registers the transaction in the RDS audit log. Two optional controls harden this step in regulated tiers:
+    *   **Redaction (DLP)** — with `REDACTION_ENABLED=true`, any PII/secret in the tool arguments or the downstream response (emails, cards, JWTs, cloud/API keys, IBANs) is masked as `[REDACTED:<class>]` before it reaches the LLM or the audit log; only per-class hit counts are recorded.
+    *   **Tool pinning** — with `TOOL_PINNING_STRICT=true`, a tool whose definition changed since it was approved (a mismatched SHA-256 `definitionHash`) is refused with error `-32001`, so a redefined `lch_get_non_cash_collateral` can't silently alter a compliance report. See [Tool Pinning & Redaction](governance_pinning_redaction.html).
 4.  **Drafting the Report**: The LLM compiles the markdown file based on the skill template:
 
 ```markdown

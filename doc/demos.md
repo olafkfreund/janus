@@ -108,6 +108,54 @@ just demo-antigravity
 
 ---
 
+## Demo 3 — Onboard an API from its OpenAPI spec
+
+You don't have to hand-map a downstream API tool-by-tool. Point the CLI at an OpenAPI 3.x document
+(file or URL) and Janus generates a connection plus one MCP tool per operation. Preview first with
+`--dry-run`, then apply with a namespacing `--prefix`:
+
+```bash
+# 1. Preview — parses the spec, writes nothing
+mcp-cli import openapi https://api.example.com/openapi.json --dry-run --prefix petstore_
+
+# 2. Apply — creates the connection + one tool per operation
+mcp-cli import openapi https://api.example.com/openapi.json --prefix petstore_
+```
+
+```text
+OpenAPI Import Summary:
+=======================
+Source:           https://api.example.com/openapi.json
+Mode:             APPLY (connection + tool endpoints written to the gateway)
+
+Connection:       Swagger Petstore  (id: 4f1c…)
+Endpoints created: 3
+  petstore_list_pets, petstore_get_pet, petstore_create_pet
+```
+
+Imported tools behave exactly like hand-mapped ones. If the API needs credentials, register the secret
+in the vault and set the connection's `auth_secret_ref` — the import never carries credentials. Full
+details on the [OpenAPI → MCP Import](openapi_import.html) page.
+
+---
+
+## Demo 4 — Redaction (DLP) in the loop
+
+Set `REDACTION_ENABLED=true` on the gateway and any PII/secret that appears in a tool's **arguments** or
+in a downstream **response** is masked before it reaches the model — and the masking is audit-logged as
+per-class hit counts (never the raw values). For example, a downstream payload containing
+`contact@member.example.com` and an `AKIA…` key comes back to the LLM as:
+
+```json
+{ "owner_email": "[REDACTED:email]", "provisioning_key": "[REDACTED:aws_access_key]" }
+```
+
+This keeps customer data and stray credentials out of the LLM context window without changing the tool
+or the client. See [Tool Pinning & Redaction](governance_pinning_redaction.html) for the full detector
+list and the strict tool-pinning companion control.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause / Fix |

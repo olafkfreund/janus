@@ -14,7 +14,11 @@ An enterprise-grade, high-performance API Gateway and Web Portal that translates
   - **Token-Authenticated MCP Clients**: scoped client tokens (glob scopes + roles), **hashed at rest** (SHA-256) and shown once. Header-only bearer tokens.
   - **OIDC/OAuth2 SSO** with `state` CSRF + issuer/audience/expiry validation; **mTLS & TLS 1.3**.
   - **Hardened edge**: per-IP rate limiting, HTTP read/write/idle timeouts, request body-size caps.
-- **Pluggable Security Vaults**: `local` (encrypted JSON file, single-node/dev) and `postgres` (**AES-256-GCM encrypted in the shared database** — correct for multi-replica). `aws`/`gcp`/`azure` **fail closed** until implemented. Connections store only a **reference** (`auth_secret_ref`) — the credential is injected server-side (bearer/basic/custom headers); the LLM never sees it.
+  - **OAuth 2.1 resource server** *(opt-in, `OAUTH_ENABLED=true`)*: advertises protected-resource metadata at `GET /.well-known/oauth-protected-resource` (RFC 9728), emits `WWW-Authenticate` challenges, and validates audience-bound (RFC 8707) JWT access tokens against the configured authorization servers' JWKS. Coexists with the existing master/client-token auth.
+  - **Tool-definition hash pinning** *(rug-pull defense)*: every tool carries a SHA-256 `definitionHash` and a `version` (both surfaced in `tools/list`). With `TOOL_PINNING_STRICT=true`, a call is blocked if the tool's definition changed since it was approved.
+  - **PII/secret redaction (DLP)** *(opt-in, `REDACTION_ENABLED=true`)*: masks emails, Luhn-validated credit-card numbers, JWTs, AWS keys, API keys, and IBANs in tool arguments and downstream responses **before they reach the LLM**; redaction events are audit-logged (class + count only, never the value).
+- **OpenAPI → MCP import**: turn an OpenAPI 3.x spec (JSON or YAML) into connections, endpoints, and tools in one shot — via `POST /api/import/openapi` (admin) or `mcp-cli import openapi <file|url>` (supports `--dry-run` and `--prefix`).
+- **Pluggable Security Vaults**: `local` (**AES-256-GCM encrypted JSON file**, single-node/dev) and `postgres` (**AES-256-GCM encrypted in the shared database** — correct for multi-replica). Both derive their key from `VAULT_ENCRYPTION_KEY` (falling back to `JWT_SECRET`); a pre-existing plaintext `local` file is transparently migrated to ciphertext on first read. `aws`/`gcp`/`azure` **fail closed** until implemented. Connections store only a **reference** (`auth_secret_ref`) — the credential is injected server-side (bearer/basic/custom headers); the LLM never sees it.
 - **Scales & self-heals**: stateless gateway on shared PostgreSQL, HorizontalPodAutoscaler (2→10) + PodDisruptionBudget on Kubernetes; short-TTL config/secret/response caches, connection pooling, bounded retries, and `/healthz` + `/readyz` probes (see [`SCALING_AND_CACHING.md`](SCALING_AND_CACHING.md)).
 - **Air-Gap Preparedness**: A self-contained Go binary with embedded single-page assets (`//go:embed`), local SQLite for single-node, and OpenTelemetry/Prometheus metrics.
 
@@ -333,7 +337,7 @@ Configure the gateway using standard environment variables. A full template is i
 | `DATABASE_URL` | `""` | PostgreSQL URI (`postgres://…`). Overrides `DATABASE_PATH`; required for multi-replica. |
 | `VAULT_PROVIDER` | `local` | `local`, `postgres` (implemented) or `aws`/`gcp`/`azure` (fail closed). |
 | `VAULT_LOCAL_PATH` | `./secrets.json` | JSON vault file (provider `local`). |
-| `VAULT_ENCRYPTION_KEY` | *(falls back to `JWT_SECRET`)* | AES key source for the `postgres` vault. |
+| `VAULT_ENCRYPTION_KEY` | *(falls back to `JWT_SECRET`)* | AES-256-GCM key source for the `local` **and** `postgres` vaults. |
 
 **Auth / SSO / TLS:**
 
@@ -357,6 +361,45 @@ Configure the gateway using standard environment variables. A full template is i
 | `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` | `25` / `10` | DB connection pool. |
 | `DOWNSTREAM_RETRIES` | `2` | Bounded retries (backoff) for idempotent downstream calls. |
 | `SEED_DEMO_DATA` | `false` | Seed demo connections/tools on first boot. |
+
+**OAuth 2.1 resource server** *(all off unless `OAUTH_ENABLED=true`):*
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `OAUTH_ENABLED` | `false` | Enable the OAuth 2.1 resource-server surface (metadata endpoint, `WWW-Authenticate` challenges, JWKS-based token validation). Existing master/client-token auth still works. |
+| `OAUTH_RESOURCE_URI` | `""` | This gateway's resource identifier, advertised in the protected-resource metadata and required as the token audience (RFC 8707). |
+| `OAUTH_AUTHORIZATION_SERVERS` | `""` | Comma-separated authorization-server issuer URLs whose JWKS are trusted to sign access tokens. |
+| `OAUTH_SCOPES_SUPPORTED` | `""` | Comma-separated scopes advertised in the protected-resource metadata. |
+
+**Tool pinning & redaction (DLP)** *(off by default):*
+
+| Variable | Default | Purpose |
+| :--- | :--- | :--- |
+| `TOOL_PINNING_STRICT` | `false` | Block a `tools/call` when the tool's `definitionHash` no longer matches the approved definition (rug-pull defense). Hashes/versions are surfaced in `tools/list` regardless. |
+| `REDACTION_ENABLED` | `false` | Mask PII/secrets (emails, Luhn-validated cards, JWTs, AWS keys, API keys, IBANs) in tool arguments and downstream responses before they reach the LLM; events are audit-logged as class + count only. |
+
+---
+
+## Importing an OpenAPI spec
+
+Bootstrap a connection and its tools from an existing OpenAPI 3.x document (JSON or YAML) instead of registering endpoints by hand.
+
+**Via the admin REST API** (JWT + admin role):
+```bash
+curl -X POST https://<gateway-host>/api/import/openapi \
+  -H "Authorization: Bearer <admin-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://api.example.com/openapi.json", "prefix": "example_"}'
+```
+
+**Via the CLI** (`--dry-run` previews the generated connection/tools without writing; `--prefix` namespaces the tools):
+```bash
+# From a local file
+mcp-cli import openapi ./petstore.yaml --prefix petstore_ --dry-run
+
+# Or straight from a URL
+mcp-cli import openapi https://api.example.com/openapi.json --prefix example_
+```
 
 ---
 
@@ -418,6 +461,11 @@ just build-cli-all
   mcp-cli vault delete --key <secret-path>
   ```
 
+* **OpenAPI Import** (generate connection + endpoints/tools from an OpenAPI 3.x spec):
+  ```bash
+  mcp-cli import openapi <file|url> [--prefix <prefix>] [--dry-run]
+  ```
+
 ---
 
 ## Integrating with Secret Vaults
@@ -426,9 +474,11 @@ Sensitive auth tokens are retrieved at query runtime from your chosen vault. The
 
 | Provider (`VAULT_PROVIDER`) | Status | Storage |
 | :--- | :--- | :--- |
-| `local` | ✅ Implemented | Local JSON file (`VAULT_LOCAL_PATH`) — single-node/dev |
+| `local` | ✅ Implemented | **AES-256-GCM encrypted** JSON file (`VAULT_LOCAL_PATH`) — single-node/dev. Any pre-existing plaintext file is migrated to ciphertext once, on first read. |
 | `postgres` | ✅ Implemented | **AES-256-GCM encrypted** in the shared PostgreSQL DB — correct for multi-replica |
 | `aws` / `gcp` / `azure` | ⛔ Fail closed | Not yet implemented — refuses to start (never returns fake secrets) |
+
+> Both encrypting vaults derive their key from `VAULT_ENCRYPTION_KEY`, falling back to `JWT_SECRET` if it is unset.
 
 **Per-connection `auth_type`** — how the gateway injects the resolved secret:
 
@@ -732,7 +782,7 @@ The gateway parses the parameter `member_id`, forwards the query to the underlyi
 - `main.go`: Application lifecycle, HTTP wiring, middleware (rate-limit, body-limit, `/healthz`, `/readyz`).
 - `pkg/config`: Fail-closed configuration loading and validation.
 - `pkg/storage`: SQLite/Postgres connector, CRUD, audit logs, hashed client tokens, short-TTL caches.
-- `pkg/vault`: `local` (file) and `postgres` (AES-256-GCM) vaults; cloud providers fail closed.
+- `pkg/vault`: `local` (AES-256-GCM file) and `postgres` (AES-256-GCM) vaults; cloud providers fail closed.
 - `pkg/auth`: JWT (audience/issuer), RBAC middleware, OIDC, TLS/mTLS profiles.
 - `pkg/gateway`: Template rendering, SSRF egress guard, secret/response caches, retries, HTTP execution.
 - `pkg/mcp`: MCP JSON-RPC — Streamable HTTP (`/mcp`) + legacy HTTP+SSE (`/sse`, `/messages`).

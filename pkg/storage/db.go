@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/calitti/mcp-api-gateway/pkg/cache"
+	"github.com/calitti/mcp-api-gateway/pkg/toolintegrity"
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -78,6 +79,8 @@ type APIEndpoint struct {
 	Method           string `json:"method"`
 	ParametersSchema string `json:"parameters_schema"` // JSON Schema string
 	Template         string `json:"template"`          // Query/Body template string
+	DefinitionHash   string `json:"definition_hash"`   // content hash of the tool's behaviour-relevant fields (see pkg/toolintegrity)
+	Version          int    `json:"version"`           // incremented whenever DefinitionHash changes on save
 }
 
 type AuditLog struct {
@@ -201,6 +204,20 @@ func (d *DB) initSchema() error {
 			return fmt.Errorf("failed to add tool_prefix column to api_connections: %w", err)
 		}
 	}
+	_, err = d.Exec("ALTER TABLE api_endpoints ADD COLUMN definition_hash TEXT")
+	if err != nil {
+		errStr := err.Error()
+		if !strings.Contains(errStr, "duplicate column") && !strings.Contains(errStr, "already exists") {
+			return fmt.Errorf("failed to add definition_hash column to api_endpoints: %w", err)
+		}
+	}
+	_, err = d.Exec("ALTER TABLE api_endpoints ADD COLUMN version INTEGER DEFAULT 1")
+	if err != nil {
+		errStr := err.Error()
+		if !strings.Contains(errStr, "duplicate column") && !strings.Contains(errStr, "already exists") {
+			return fmt.Errorf("failed to add version column to api_endpoints: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -226,6 +243,9 @@ func (d *DB) GetConnections(ctx context.Context) ([]*APIConnection, error) {
 		}
 		c.Enabled = enabledVal == 1
 		conns = append(conns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate connections: %w", err)
 	}
 	d.connCache.Set(cacheKey, conns)
 	return conns, nil
@@ -279,7 +299,7 @@ func (d *DB) DeleteConnection(ctx context.Context, id string) error {
 // Endpoints / Tools CRUD
 
 func (d *DB) GetEndpoints(ctx context.Context, connID string) ([]*APIEndpoint, error) {
-	rows, err := d.QueryContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints WHERE connection_id = ?"), connID)
+	rows, err := d.QueryContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template, COALESCE(definition_hash, ''), COALESCE(version, 1) FROM api_endpoints WHERE connection_id = ?"), connID)
 	if err != nil {
 		return nil, err
 	}
@@ -288,10 +308,13 @@ func (d *DB) GetEndpoints(ctx context.Context, connID string) ([]*APIEndpoint, e
 	var eps []*APIEndpoint
 	for rows.Next() {
 		e := &APIEndpoint{}
-		if err := rows.Scan(&e.ID, &e.ConnectionID, &e.ToolName, &e.ToolDescription, &e.Path, &e.Method, &e.ParametersSchema, &e.Template); err != nil {
+		if err := rows.Scan(&e.ID, &e.ConnectionID, &e.ToolName, &e.ToolDescription, &e.Path, &e.Method, &e.ParametersSchema, &e.Template, &e.DefinitionHash, &e.Version); err != nil {
 			return nil, err
 		}
 		eps = append(eps, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate endpoints: %w", err)
 	}
 	return eps, nil
 }
@@ -301,7 +324,7 @@ func (d *DB) GetAllEndpoints(ctx context.Context) ([]*APIEndpoint, error) {
 	if v, ok := d.epCache.Get(cacheKey); ok {
 		return v, nil
 	}
-	rows, err := d.QueryContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template FROM api_endpoints"))
+	rows, err := d.QueryContext(ctx, d.query("SELECT id, connection_id, tool_name, tool_description, path, method, parameters_schema, template, COALESCE(definition_hash, ''), COALESCE(version, 1) FROM api_endpoints"))
 	if err != nil {
 		return nil, err
 	}
@@ -310,10 +333,13 @@ func (d *DB) GetAllEndpoints(ctx context.Context) ([]*APIEndpoint, error) {
 	var eps []*APIEndpoint
 	for rows.Next() {
 		e := &APIEndpoint{}
-		if err := rows.Scan(&e.ID, &e.ConnectionID, &e.ToolName, &e.ToolDescription, &e.Path, &e.Method, &e.ParametersSchema, &e.Template); err != nil {
+		if err := rows.Scan(&e.ID, &e.ConnectionID, &e.ToolName, &e.ToolDescription, &e.Path, &e.Method, &e.ParametersSchema, &e.Template, &e.DefinitionHash, &e.Version); err != nil {
 			return nil, err
 		}
 		eps = append(eps, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate endpoints: %w", err)
 	}
 	d.epCache.Set(cacheKey, eps)
 	return eps, nil
@@ -329,10 +355,44 @@ func (d *DB) GetEndpointByToolName(ctx context.Context, name string) (*APIEndpoi
 	return e, nil
 }
 
+// SaveEndpoint creates or updates an endpoint/tool definition. It computes a
+// content hash over the tool's behaviour-relevant fields (see
+// pkg/toolintegrity) and persists it alongside a monotonically increasing
+// version: a new endpoint starts at version 1, and an existing endpoint's
+// version is incremented only when the newly computed hash differs from the
+// one currently stored — i.e. the tool's observable definition actually
+// changed, not just an unrelated field like updated_at.
 func (d *DB) SaveEndpoint(ctx context.Context, ep *APIEndpoint) error {
+	newHash := toolintegrity.Hash(toolintegrity.ToolDef{
+		Name:             ep.ToolName,
+		Description:      ep.ToolDescription,
+		Method:           ep.Method,
+		Path:             ep.Path,
+		ParametersSchema: ep.ParametersSchema,
+	})
+
+	version := 1
+	row := d.QueryRowContext(ctx, d.query("SELECT COALESCE(definition_hash, ''), COALESCE(version, 1) FROM api_endpoints WHERE id = ?"), ep.ID)
+	var existingHash string
+	var existingVersion int
+	switch err := row.Scan(&existingHash, &existingVersion); err {
+	case nil:
+		version = existingVersion
+		if existingHash != newHash {
+			version = existingVersion + 1
+		}
+	case sql.ErrNoRows:
+		version = 1
+	default:
+		return fmt.Errorf("failed to look up existing endpoint: %w", err)
+	}
+
+	ep.DefinitionHash = newHash
+	ep.Version = version
+
 	query := `
-		INSERT INTO api_endpoints (id, connection_id, tool_name, tool_description, path, method, parameters_schema, template, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO api_endpoints (id, connection_id, tool_name, tool_description, path, method, parameters_schema, template, definition_hash, version, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			connection_id = excluded.connection_id,
 			tool_name = excluded.tool_name,
@@ -341,9 +401,11 @@ func (d *DB) SaveEndpoint(ctx context.Context, ep *APIEndpoint) error {
 			method = excluded.method,
 			parameters_schema = excluded.parameters_schema,
 			template = excluded.template,
+			definition_hash = excluded.definition_hash,
+			version = excluded.version,
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err := d.ExecContext(ctx, d.query(query), ep.ID, ep.ConnectionID, ep.ToolName, ep.ToolDescription, ep.Path, ep.Method, ep.ParametersSchema, ep.Template)
+	_, err := d.ExecContext(ctx, d.query(query), ep.ID, ep.ConnectionID, ep.ToolName, ep.ToolDescription, ep.Path, ep.Method, ep.ParametersSchema, ep.Template, ep.DefinitionHash, ep.Version)
 	if err == nil {
 		d.invalidateCaches()
 	}
@@ -387,6 +449,9 @@ func (d *DB) GetAuditLogs(ctx context.Context) ([]*AuditLog, error) {
 			return nil, err
 		}
 		logs = append(logs, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate audit logs: %w", err)
 	}
 	return logs, nil
 }
@@ -461,6 +526,9 @@ func (d *DB) GetClientTokens(ctx context.Context) ([]*ClientToken, error) {
 		t.Token = ""
 		t.Enabled = enabledVal == 1
 		tokens = append(tokens, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate client tokens: %w", err)
 	}
 	return tokens, nil
 }

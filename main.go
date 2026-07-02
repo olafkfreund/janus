@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,7 +20,9 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/config"
 	"github.com/calitti/mcp-api-gateway/pkg/gateway"
 	"github.com/calitti/mcp-api-gateway/pkg/mcp"
+	"github.com/calitti/mcp-api-gateway/pkg/oauth"
 	"github.com/calitti/mcp-api-gateway/pkg/portal"
+	"github.com/calitti/mcp-api-gateway/pkg/redaction"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/telemetry"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
@@ -83,6 +86,36 @@ func main() {
 
 	// 7. Initialize MCP Server with vault capabilities
 	mcpServer := mcp.NewMCPServer(db, gatewayClient, vaultProvider, authManager, cfg.CORSAllowedOrigins)
+
+	// Wedge features: OAuth resource-server validation, response redaction, strict
+	// tool pinning. Each is opt-in via config and logged when enabled.
+	var oauthCfg oauth.Config
+	if cfg.OAuthEnabled {
+		oauthCfg = oauth.Config{
+			Enabled:              true,
+			ResourceURI:          cfg.OAuthResourceURI,
+			AuthorizationServers: cfg.OAuthAuthorizationServers,
+			ScopesSupported:      cfg.OAuthScopesSupported,
+		}
+		validator, err := oauth.NewValidator(oauthCfg)
+		if err != nil {
+			log.Fatalf("OAuth validator initialization failed: %v", err)
+		}
+		mcpServer.EnableOAuth(validator, oauthCfg)
+		log.Printf("OAuth resource-server validation enabled (resource=%s)", cfg.OAuthResourceURI)
+	}
+	if cfg.RedactionEnabled {
+		redactor, err := redaction.New(redaction.Config{Enabled: true})
+		if err != nil {
+			log.Fatalf("Redaction initialization failed: %v", err)
+		}
+		mcpServer.EnableRedaction(redactor)
+		log.Println("Response redaction enabled")
+	}
+	mcpServer.SetToolPinningStrict(cfg.ToolPinningStrict)
+	if cfg.ToolPinningStrict {
+		log.Println("Strict tool pinning enabled")
+	}
 
 	// If stdio mode flag is set, run MCP over stdin/stdout directly
 	if *stdioMode {
@@ -164,6 +197,21 @@ func main() {
 	// Register Prometheus metrics endpoint (OTel), optionally token-protected.
 	mux.Handle("/metrics", metricsAuth(cfg.MetricsToken, telemetry.ServeMetrics()))
 
+	// OAuth protected-resource metadata (RFC 9728) must be publicly discoverable
+	// (no auth, no session) so MCP clients can find the authorization server(s)
+	// before they have a token.
+	if cfg.OAuthEnabled {
+		mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+			body, err := oauth.ProtectedResourceMetadata(oauthCfg)
+			if err != nil {
+				http.Error(w, "metadata unavailable", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(body)
+		})
+	}
+
 	// Load TLS & mTLS certificates (Enterprise security)
 	tlsConfig, err := auth.LoadTLSConfig(cfg.TLSCertPath, cfg.TLSKeyPath, cfg.ClientCAPath)
 	if err != nil {
@@ -213,13 +261,40 @@ func main() {
 }
 
 // logMCP logs how MCP clients negotiate the transport (method, path, Accept,
-// User-Agent). Low volume; useful for diagnosing client compatibility.
+// User-Agent). Low volume; useful for diagnosing client compatibility. The
+// query string is redacted before logging — it carries the auth token and
+// session ID, which must never land in stdout/container logs.
 func logMCP(label string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("MCP[%s] %s %s?%s Accept=%q UA=%q", label, r.Method, r.URL.Path, r.URL.RawQuery,
+		log.Printf("MCP[%s] %s %s?%s Accept=%q UA=%q", label, r.Method, r.URL.Path, redactQuery(r.URL.RawQuery),
 			r.Header.Get("Accept"), r.Header.Get("User-Agent"))
 		next.ServeHTTP(w, r)
 	}
+}
+
+// redactQuery returns a sanitized copy of a raw query string safe for
+// logging. Values for keys that look like credentials (token, sessionId,
+// access_token, secret, etc.) are replaced with "REDACTED"; the original
+// request/URL is never modified — this only affects the logged copy.
+func redactQuery(rawQuery string) string {
+	if rawQuery == "" {
+		return ""
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return "[unparseable query redacted]"
+	}
+	for key := range values {
+		lower := strings.ToLower(key)
+		if strings.Contains(lower, "token") || strings.Contains(lower, "session") ||
+			strings.Contains(lower, "secret") || strings.Contains(lower, "auth") ||
+			strings.Contains(lower, "key") || strings.Contains(lower, "password") {
+			for i := range values[key] {
+				values[key][i] = "REDACTED"
+			}
+		}
+	}
+	return values.Encode()
 }
 
 // limitBody caps request body size to defend against memory-exhaustion DoS.
@@ -292,13 +367,60 @@ func (l *ipRateLimiter) allow(ip string) bool {
 
 var globalLimiter = newIPRateLimiter(50, 100) // ~50 req/s/IP, burst 100
 
+// Bound the visitors map's memory: sweep out buckets that have gone idle
+// beyond visitorTTL every sweepInterval. Started once at process startup.
+const (
+	sweepInterval = 5 * time.Minute
+	visitorTTL    = 10 * time.Minute
+)
+
+func init() {
+	globalLimiter.startEvictionSweeper(sweepInterval, visitorTTL)
+}
+
+// startEvictionSweeper runs a background goroutine that periodically deletes
+// buckets idle longer than ttl, preventing the visitors map from growing
+// without bound as distinct client IPs churn through over time.
+func (l *ipRateLimiter) startEvictionSweeper(interval, ttl time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			cutoff := time.Now().Add(-ttl)
+			l.mu.Lock()
+			for ip, b := range l.visitors {
+				if b.last.Before(cutoff) {
+					delete(l.visitors, ip)
+				}
+			}
+			l.mu.Unlock()
+		}
+	}()
+}
+
+// clientIP derives the originating client address for rate limiting.
+// Behind the nginx/k8s ingress, r.RemoteAddr is the proxy's own IP, which
+// would collapse every distinct client into a single bucket. Prefer
+// X-Forwarded-For (leftmost entry is the original client, trusting the
+// ingress hop) or X-Real-IP, falling back to RemoteAddr's host part.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if ip := strings.TrimSpace(strings.Split(xff, ",")[0]); ip != "" {
+			return ip
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 func rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-			ip = host
-		}
-		if !globalLimiter.allow(ip) {
+		if !globalLimiter.allow(clientIP(r)) {
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}

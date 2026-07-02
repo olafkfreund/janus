@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
@@ -17,6 +18,11 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
 )
+
+// maxResponseBytes bounds how much of a downstream response body we will
+// buffer in memory. Without a cap, a malicious or misbehaving upstream could
+// stream an unbounded body and exhaust gateway memory (OOM DoS).
+const maxResponseBytes = 10 << 20 // 10 MiB
 
 // EgressPolicy controls which downstream hosts the gateway is permitted to call.
 // It is the primary defense against SSRF (e.g. cloud metadata, internal services).
@@ -82,22 +88,42 @@ func NewGatewayClient(vp vault.VaultProvider, egress EgressPolicy) *GatewayClien
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 		// Validate the actual connected IP at dial time. This closes the
-		// DNS-rebinding TOCTOU window left by a name-only pre-check.
+		// DNS-rebinding TOCTOU window left by a name-only pre-check: for
+		// hostname targets we resolve here ourselves and validate every
+		// candidate IP, then dial that validated IP directly so the
+		// transport cannot re-resolve to a different (possibly private)
+		// address between our check and the actual connection.
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, _, err := net.SplitHostPort(addr)
+			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
 				return nil, err
 			}
-			if !egress.AllowPrivate {
-				if ip, err := netip.ParseAddr(host); err == nil {
-					ip = ip.Unmap()
-					if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-						ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-						return nil, fmt.Errorf("blocked dial to non-public address %s", ip)
-					}
+			if egress.AllowPrivate {
+				return baseDialer.DialContext(ctx, network, addr)
+			}
+			if ip, err := netip.ParseAddr(host); err == nil {
+				if isDisallowedIP(ip) {
+					return nil, fmt.Errorf("blocked dial to non-public address %s", ip.Unmap())
+				}
+				return baseDialer.DialContext(ctx, network, addr)
+			}
+			// Hostname target: resolve ourselves so we can validate every
+			// returned address before dialing.
+			ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve dial target %q: %w", host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("no addresses found for dial target %q", host)
+			}
+			for _, resolved := range ips {
+				if isDisallowedIP(resolved) {
+					return nil, fmt.Errorf("blocked dial to non-public address %s (host %q)", resolved.Unmap(), host)
 				}
 			}
-			return baseDialer.DialContext(ctx, network, addr)
+			// Dial the validated IP literal directly so no further name
+			// resolution can occur after this check.
+			return baseDialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
 		},
 	}
 
@@ -111,6 +137,14 @@ func NewGatewayClient(vp vault.VaultProvider, egress EgressPolicy) *GatewayClien
 		},
 	}
 	return gc
+}
+
+// isDisallowedIP reports whether addr is a loopback, private, link-local, or
+// unspecified address that must never be reachable via egress calls or dials.
+func isDisallowedIP(addr netip.Addr) bool {
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() || addr.IsUnspecified()
 }
 
 // validateEgress enforces scheme, allowlist, and private-range restrictions on a
@@ -153,10 +187,8 @@ func (gc *GatewayClient) validateEgress(reqURL *url.URL) error {
 		if !ok {
 			continue
 		}
-		addr = addr.Unmap()
-		if addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
-			addr.IsLinkLocalMulticast() || addr.IsUnspecified() {
-			return fmt.Errorf("blocked request to non-public address %s (host %q)", addr, host)
+		if isDisallowedIP(addr) {
+			return fmt.Errorf("blocked request to non-public address %s (host %q)", addr.Unmap(), host)
 		}
 	}
 	return nil
@@ -164,11 +196,13 @@ func (gc *GatewayClient) validateEgress(reqURL *url.URL) error {
 
 // ExecuteCall renders the templates, fetches credentials, runs the request, and formats the output.
 func (gc *GatewayClient) ExecuteCall(ctx context.Context, conn *storage.APIConnection, ep *storage.APIEndpoint, params map[string]interface{}) (string, error) {
-	// 1. Resolve path template
+	// 1. Resolve path template. Percent-escape each substituted value so a
+	// param cannot inject extra path segments (e.g. "../", "/") or otherwise
+	// alter the request path structure.
 	renderedPath := ep.Path
 	for k, v := range params {
 		placeholder := fmt.Sprintf("{{%s}}", k)
-		renderedPath = strings.ReplaceAll(renderedPath, placeholder, fmt.Sprintf("%v", v))
+		renderedPath = strings.ReplaceAll(renderedPath, placeholder, url.PathEscape(fmt.Sprintf("%v", v)))
 	}
 
 	fullURLStr := strings.TrimSuffix(conn.BaseURL, "/") + "/" + strings.TrimPrefix(renderedPath, "/")
@@ -294,7 +328,7 @@ func (gc *GatewayClient) ExecuteCall(ctx context.Context, conn *storage.APIConne
 	// Try to format JSON beautifully if it is JSON, otherwise return raw text.
 	out := string(respBody)
 	var prettyJSON bytes.Buffer
-	if json.Unmarshal(respBody, &struct{}{}) == nil {
+	if json.Valid(respBody) {
 		if err := json.Indent(&prettyJSON, respBody, "", "  "); err == nil {
 			out = prettyJSON.String()
 		}
@@ -334,6 +368,10 @@ func (gc *GatewayClient) doWithRetry(ctx context.Context, req *http.Request, met
 			if backoff > 2*time.Second {
 				backoff = 2 * time.Second
 			}
+			// Add +/-50% jitter so concurrent callers retrying against the
+			// same upstream don't all land on the same schedule (thundering herd).
+			jitter := time.Duration((rand.Float64()*2 - 1) * float64(backoff) * 0.5)
+			backoff += jitter
 			select {
 			case <-ctx.Done():
 				return nil, nil, ctx.Err()
@@ -347,11 +385,18 @@ func (gc *GatewayClient) doWithRetry(ctx context.Context, req *http.Request, met
 			continue
 		}
 
-		respBody, readErr := io.ReadAll(resp.Body)
+		// Cap how much of the body we buffer to guard against a huge or
+		// unbounded upstream response exhausting gateway memory. Read one
+		// byte past the limit so we can distinguish "exactly at the cap"
+		// from "over the cap".
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 		resp.Body.Close()
 		if readErr != nil {
 			lastErr = fmt.Errorf("failed to read response body: %w", readErr)
 			continue
+		}
+		if len(respBody) > maxResponseBytes {
+			return nil, nil, fmt.Errorf("response body exceeds maximum allowed size of %d bytes", maxResponseBytes)
 		}
 
 		// Retry idempotent requests on transient upstream 5xx.

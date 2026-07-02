@@ -12,6 +12,14 @@ secret 30s, response 10s) are enabled. SSE multi-pod routing uses **nginx cookie
 and `tools/call` through the affinity cookie. Redis remains the phase-2 lever for a shared response
 cache / distributed rate limiter / cross-pod SSE registry — add when measured (see §4/§5).
 
+**Newer optional features and the hot path:** when the OAuth 2.1 resource server is enabled
+(`OAUTH_ENABLED=true`), each authorization server's **JWKS is fetched once and cached in-memory
+per pod** (with periodic refresh), so token validation stays off the network on the hot path — this
+is the in-process delivery of the phase-2 "JWKS caching" item below. When redaction is enabled
+(`REDACTION_ENABLED=true`), the DLP scan adds **per-call CPU** (regex + Luhn over arguments and
+downstream responses) on the request path; it is **off by default** and its cost scales with payload
+size, so factor it into CPU requests / HPA targets before enabling at scale.
+
 
 ## 1. Research & review — current state
 
@@ -72,7 +80,9 @@ limiter, and SSE sessions consistent across pods.
 - **Redis** for: shared response cache, a distributed rate limiter (correct global limits), and an
   SSE **session registry** so any pod can serve `/messages` (or keep sticky sessions at the ingress).
 - **Circuit breaker** per downstream connection (open after consecutive failures; fail fast).
-- **JWKS caching** for OIDC signature verification.
+- **JWKS caching** for OIDC signature verification. *(Delivered in-process for the OAuth 2.1 resource
+  server — see LIVE STATUS; a shared/Redis-backed cache is only needed if JWKS refresh cost becomes
+  material across many pods.)*
 - **OpenTelemetry tracing export** to a collector (currently metrics only) for cross-pod latency.
 
 ## 5. How scaling stays safe ("scale when needed without breaking anything")

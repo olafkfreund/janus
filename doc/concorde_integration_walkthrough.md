@@ -146,8 +146,41 @@ When this tool is called, Janus binds variables matching this schema:
 
 ---
 
+## Shortcut: Onboard the whole Concorde API from its OpenAPI spec
+
+Steps 3 and 4 register the connection and map one endpoint by hand — ideal when you want tight control
+over a single tool. When the Concorde microservice already publishes an **OpenAPI 3.x** description,
+you can collapse both steps into a single import that generates the connection and *one MCP tool per
+operation*:
+
+```bash
+# Preview what would be created (writes nothing)
+./mcp-cli import openapi https://concorde-api.eks.internal/openapi.json \
+  --dry-run --prefix concorde_
+
+# Apply — creates the "Concorde Core Service" connection + every tool
+./mcp-cli import openapi https://concorde-api.eks.internal/openapi.json \
+  --prefix concorde_
+```
+
+The importer reads `info.title` and `servers[0].url` for the connection, infers `auth_type` from the
+spec's security schemes, and generates a JSON Schema per operation — exactly the shape Step 4 produces by
+hand. **Credentials are never imported**, so you still complete **Step 2** (store
+`prod/concorde/api-token` in the vault) and point the connection's `auth_secret_ref` at it. Imported
+tools also carry a SHA-256 `definitionHash` + `version`, so they are eligible for strict tool pinning
+(see Step 5). Full details on the [OpenAPI → MCP Import](openapi_import.html) page.
+
+---
+
 ## Step 5: Test and Verify Client Execution
 Now, clearing member developers connect their AI assistants (e.g., Claude Desktop) to Janus.
+
+> **Client authentication.** In this walkthrough members present a Janus **client token** scoped to
+> `concorde_*`. Where clearing-member developers are already federated with the Customer identity
+> provider, the gateway can instead run as an **OAuth 2.1 resource server** (`OAUTH_ENABLED=true`): the
+> member's IdP-issued, **audience-bound** access token is accepted directly on `/mcp`, validated against
+> this gateway (RFC 9728 / 8707), and its OAuth scopes enforced. Both paths coexist — see
+> [OAuth 2.1 Resource Server](oauth_resource_server.html).
 
 ### A. Client Tool Discovery (`tools/list`)
 The AI assistant checks the available capabilities and discovers the tool:
@@ -185,13 +218,14 @@ When a user asks: *"What was our cleared volume for MEM-LCH-001 on June 29, 2026
 ```
 
 ### C. Janus Dynamic Mediation Flow:
-1.  Janus intercepts the call and verifies the client token's scope (e.g. `concorde_*` is authorized).
-2.  Janus resolves `prod/concorde/api-token` from the Secrets Vault (`Bearer secret-concorde-token`).
-3.  Janus binds the arguments and issues a REST call:
+1.  Janus intercepts the call and verifies the caller's authorization — the client token's scope (e.g. `concorde_*`), or, under `OAUTH_ENABLED`, the audience-bound OAuth access token and its scopes.
+2.  **Tool-pinning check (if `TOOL_PINNING_STRICT=true`)**: Janus confirms the tool's live `definitionHash` still matches the hash it was approved under. If the tool was redefined since approval, the call is refused with JSON-RPC error `-32001` before any downstream request is made — a rug-pull defense.
+3.  Janus resolves `prod/concorde/api-token` from the Secrets Vault (`Bearer secret-concorde-token`).
+4.  Janus binds the arguments (redacting any PII/secrets first when `REDACTION_ENABLED=true`) and issues a REST call:
     `GET https://concorde-api.eks.internal/v1/dpg/trade-volume?member_id=MEM-LCH-001&date=2026-06-29`
     *Header: Authorization: Bearer secret-concorde-token*
-4.  The Concorde service fetches parameters, executes the prepared query on Snowflake, and returns structured JSON back to Janus.
-5.  Janus sanitizes response headers, logs the execution latency to Audit logs/Prometheus, and returns the payload to the LLM client:
+5.  The Concorde service fetches parameters, executes the prepared query on Snowflake, and returns structured JSON back to Janus.
+6.  Janus sanitizes response headers, applies redaction to the response body (masking e.g. any stray email or account identifier as `[REDACTED:<class>]` when enabled), logs the execution latency and per-class redaction counts to Audit logs/Prometheus, and returns the payload to the LLM client:
 
 ```json
 {
@@ -207,4 +241,4 @@ When a user asks: *"What was our cleared volume for MEM-LCH-001 on June 29, 2026
   "id": 1
 }
 ```
-6.  The AI assistant parses the JSON and presents a natural language summary to the clearing member.
+7.  The AI assistant parses the JSON and presents a natural language summary to the clearing member.
