@@ -104,10 +104,13 @@ spec:
           value: "2"
         # The nginx ingress already terminates TLS (cert-manager, secret `janus-tls`).
         # This just tells the portal to report edge TLS correctly instead of "unencrypted".
-        # MTLS_MODE and the ingress client-cert verification are NOT set inline here —
-        # they're enabled out-of-band, see deployment/mtls/README.md.
         - name: TLS_TERMINATED_AT_PROXY
           value: "true"
+        # Optional mTLS is enforced at the ingress (auth-tls-* annotations above);
+        # this makes the portal report the posture. Prerequisite: the janus-client-ca
+        # Secret must exist (see deployment/mtls/README.md). "optional" is non-breaking.
+        - name: MTLS_MODE
+          value: "optional"
         resources:
           requests:
             cpu: "100m"
@@ -172,6 +175,15 @@ metadata:
     nginx.ingress.kubernetes.io/session-cookie-hash: "sha1"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # Optional mTLS. Requires the `janus-client-ca` Secret (managed out-of-band;
+    # see deployment/mtls/README.md). "optional" verifies a client cert IF one is
+    # presented (rejecting certs not signed by our CA) but still admits token-only
+    # clients, so Claude/Antigravity/Copilot keep working. Do NOT switch to "on"/
+    # "required" without issuing client certs to every client first.
+    nginx.ingress.kubernetes.io/auth-tls-secret: "janus/janus-client-ca"
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: "optional"
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "1"
+    nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: "true"
 spec:
   tls:
   - hosts:
