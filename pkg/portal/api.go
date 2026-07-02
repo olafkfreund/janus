@@ -894,32 +894,18 @@ func (p *PortalServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TLS/mTLS may be terminated in-pod or at an upstream proxy/ingress; report
-	// both so an ingress-terminated deployment isn't misreported as unencrypted.
-	tlsMode := "none"
-	switch {
-	case p.config.TLSCertPath != "":
-		tlsMode = "pod"
-	case p.config.TLSTerminatedAtProxy:
-		tlsMode = "edge"
-	}
-
-	mtlsMode := p.config.MTLSMode
-	if p.config.ClientCAPath != "" {
-		mtlsMode = "pod"
-	}
-
-	// Expose only non-sensitive status booleans. Filesystem paths, client IDs,
-	// and provider internals are not disclosed.
+	// TLS/mTLS may be terminated in-pod or at an upstream proxy/ingress. Config
+	// owns the posture derivation (so an ingress-terminated deployment isn't
+	// misreported as unencrypted); the handler just reports what it resolves.
+	// Expose only non-sensitive status. Filesystem paths, client IDs, and
+	// provider internals are not disclosed.
 	settings := map[string]interface{}{
 		"port":                  p.config.Port,
 		"vault_provider":        p.config.VaultProvider,
 		"jwt_secret_configured": p.config.JWTSecret != "",
 		"oidc_configured":       p.config.OIDCIssuer != "",
-		"tls_enabled":           p.config.TLSCertPath != "" || p.config.TLSTerminatedAtProxy,
-		"tls_mode":              tlsMode,
-		"mtls_enabled":          p.config.ClientCAPath != "" || p.config.MTLSMode == "optional" || p.config.MTLSMode == "required",
-		"mtls_mode":             mtlsMode,
+		"tls_mode":              p.config.TLSMode(),
+		"mtls_mode":             p.config.MTLSPosture(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

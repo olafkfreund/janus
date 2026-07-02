@@ -193,6 +193,33 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// TLSMode reports the edge-encryption posture for operational display:
+// "pod" (this process terminates TLS), "edge" (an upstream proxy/ingress
+// terminates it), or "none".
+func (c *Config) TLSMode() string {
+	switch {
+	case c.TLSCertPath != "":
+		return "pod"
+	case c.TLSTerminatedAtProxy:
+		return "edge"
+	default:
+		return "none"
+	}
+}
+
+// MTLSPosture reports the mutual-TLS posture for operational display. It folds
+// the in-pod client-CA case ("pod") in with the validated MTLS_MODE enum,
+// normalizing the empty zero value to "off" so callers never special-case it.
+func (c *Config) MTLSPosture() string {
+	if c.ClientCAPath != "" {
+		return "pod"
+	}
+	if c.MTLSMode == "" {
+		return "off"
+	}
+	return c.MTLSMode
+}
+
 func getEnv(key, defaultVal string) string {
 	if val, ok := os.LookupEnv(key); ok {
 		return val
