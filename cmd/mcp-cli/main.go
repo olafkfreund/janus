@@ -371,26 +371,32 @@ func runStatus() {
 	fmt.Printf("===============================\n")
 	fmt.Printf("Gateway URL:      %s\n", globalAddr)
 	fmt.Printf("Server Port:      %v\n", settings["port"])
-	fmt.Printf("Database Path:    %v\n", settings["database_path"])
 	fmt.Printf("Vault Provider:   %v\n", settings["vault_provider"])
-	if settings["vault_local_path"] != nil && settings["vault_local_path"] != "" {
-		fmt.Printf("Vault Local Path: %v\n", settings["vault_local_path"])
-	}
+	// /api/settings deliberately withholds filesystem paths and provider
+	// internals; read the non-sensitive posture fields it actually sends.
 	fmt.Printf("mTLS Status:      ")
-	if settings["client_ca_path"] != nil && settings["client_ca_path"] != "" {
-		fmt.Println("Enforced (CA Certificate configured)")
-	} else {
+	switch settings["mtls_mode"] {
+	case "required":
+		fmt.Println("Required (client certificate mandatory)")
+	case "optional":
+		fmt.Println("Optional (client cert accepted; token auth still allowed)")
+	case "pod":
+		fmt.Println("Enforced (CA certificate configured in-pod)")
+	default:
 		fmt.Println("Disabled")
 	}
 	fmt.Printf("TLS Enforced:     ")
-	if settings["tls_cert_path"] != nil && settings["tls_cert_path"] != "" {
-		fmt.Println("Yes (HTTPS enabled)")
-	} else {
+	switch settings["tls_mode"] {
+	case "pod":
+		fmt.Println("Yes (HTTPS terminated in-pod)")
+	case "edge":
+		fmt.Println("Yes (TLS terminated at ingress)")
+	default:
 		fmt.Println("No (HTTP plain/unencrypted)")
 	}
 	fmt.Printf("OIDC SSO Status:  ")
-	if settings["oidc_issuer"] != nil && settings["oidc_issuer"] != "" {
-		fmt.Printf("Enabled (Issuer: %v)\n", settings["oidc_issuer"])
+	if settings["oidc_configured"] == true {
+		fmt.Println("Enabled")
 	} else {
 		fmt.Println("Disabled (Standard credentials only)")
 	}

@@ -476,23 +476,13 @@ function statusBadge(modifierClass, extraStyle, label) {
 
 /**
  * Renders the "TLS Encryption Profile" badge from an /api/settings-shaped
- * payload. Prefers the `tls_mode` contract ("pod" | "edge" | "none"); falls
- * back to the legacy `tls_enabled` boolean, and finally to the original
- * `tls_cert_path` presence check, so older API responses still render sanely.
+ * payload. The backend owns the posture and always sends `tls_mode`
+ * ("pod" | "edge" | "none"); the frontend just renders it.
  * @param {object} data
  * @returns {string}
  */
 function renderTlsStatusBadge(data) {
-    let mode = data.tls_mode;
-    if (!mode) {
-        if (typeof data.tls_enabled === 'boolean') {
-            mode = data.tls_enabled ? 'pod' : 'none';
-        } else {
-            mode = data.tls_cert_path ? 'pod' : 'none';
-        }
-    }
-
-    switch (mode) {
+    switch (data.tls_mode || 'none') {
         case 'pod':
             return statusBadge('active', '', 'ENCRYPTED (HTTPS, pod TLS 1.3)');
         case 'edge':
@@ -506,24 +496,14 @@ function renderTlsStatusBadge(data) {
 }
 
 /**
- * Renders the "Mutual TLS (mTLS) Status" badge. Prefers the `mtls_mode`
- * contract ("pod" | "off" | "optional" | "required"); falls back to the
- * legacy `mtls_enabled` boolean, and finally to the original
- * `client_ca_path` presence check for older API responses.
+ * Renders the "Mutual TLS (mTLS) Status" badge. The backend owns the posture
+ * and always sends `mtls_mode` ("pod" | "off" | "optional" | "required"); the
+ * frontend just renders it.
  * @param {object} data
  * @returns {string}
  */
 function renderMtlsStatusBadge(data) {
-    let mode = data.mtls_mode;
-    if (!mode) {
-        if (typeof data.mtls_enabled === 'boolean') {
-            mode = data.mtls_enabled ? 'pod' : 'off';
-        } else {
-            mode = data.client_ca_path ? 'required' : 'off';
-        }
-    }
-
-    switch (mode) {
+    switch (data.mtls_mode || 'off') {
         case 'required':
             return statusBadge('active', '', 'mTLS REQUIRED');
         case 'optional':

@@ -33,15 +33,28 @@ resource "aws_secretsmanager_secret_version" "gateway" {
   }
 }
 
+# Account/region used to scope the vault namespace ARN below.
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+# Namespace prefix under which the "aws" vault provider stores downstream API
+# credentials. The gateway is deployed with VAULT_PROVIDER=aws and
+# AWS_SECRETS_PREFIX="${var.environment}-mcp-vault/" so its secrets live under
+# this prefix, isolated from the gateway's own bootstrap secret above.
+locals {
+  vault_secret_arn_prefix = "arn:aws:secretsmanager:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:secret:${var.environment}-mcp-vault/*"
+}
+
 # IAM Policy for secrets resolution
 resource "aws_iam_policy" "secrets_read" {
   name        = "${var.environment}-mcp-secrets-policy"
-  description = "Allows EKS pods to read vault keys and gateway tokens from Secrets Manager"
+  description = "Allows EKS pods to read gateway bootstrap secrets and manage the 'aws' vault namespace in Secrets Manager"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "GatewayBootstrapSecretRead"
         Effect = "Allow"
         Action = [
           "secretsmanager:GetSecretValue",
@@ -50,6 +63,34 @@ resource "aws_iam_policy" "secrets_read" {
         Resource = [
           aws_secretsmanager_secret.gateway.arn
         ]
+      },
+      {
+        # The "aws" vault provider manages downstream API credentials as
+        # individual secrets under the vault namespace prefix. Read is the hot
+        # path (tool calls); create/put/delete/list back the portal + CLI vault
+        # management. Scoped to the prefix so the gateway can never touch other
+        # secrets in the account.
+        Sid    = "AwsVaultNamespaceManage"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:DeleteSecret"
+        ]
+        Resource = [
+          local.vault_secret_arn_prefix
+        ]
+      },
+      {
+        # ListSecrets does not support resource-level scoping in IAM; a filter
+        # on the caller side (AWS_SECRETS_PREFIX) restricts what the portal
+        # actually displays.
+        Sid      = "AwsVaultList"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:ListSecrets"]
+        Resource = ["*"]
       }
     ]
   })
