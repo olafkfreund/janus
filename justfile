@@ -53,3 +53,10 @@ demo-claude:
 # Print the Claude Code project MCP config (.mcp.json)
 mcp-config-claude:
     @cat .mcp.json
+
+# --- Release / mirror sync ---
+# Push a branch (default main) to BOTH remotes: origin + the Synechron mirror.
+# Run AFTER a PR is merged on origin/main. Needs an SSO-authorized token at
+# SYNECHRON_TOKEN_FILE (default /tmp/synechron_github.txt). See scripts/sync-mirror.sh.
+sync-mirror ref="main":
+    bash scripts/sync-mirror.sh {{ref}}
