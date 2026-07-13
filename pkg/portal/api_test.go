@@ -413,6 +413,7 @@ func TestHostIsInternal(t *testing.T) {
 		{"unspecified", "http://0.0.0.0/x", true},
 		{"invalid URL", "://not-a-url", true},
 		{"empty host", "file:///etc/passwd", true},
+		{"link-local", "http://169.254.1.1/x", true},
 		{"public IP literal", "http://93.184.216.34/x", false},
 	}
 
@@ -482,6 +483,79 @@ func TestHandleLogin_RejectsWrongPassword(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 for wrong password, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// --- handleTokens -------------------------------------------------------------
+
+// TestHandleTokens_ReturnsPlaintextOnceAndStoresHashed proves the client
+// token is handed back in the POST response exactly once, while the store
+// only ever receives (and can only look up) the hashed form — never the
+// plaintext.
+func TestHandleTokens_ReturnsPlaintextOnceAndStoresHashed(t *testing.T) {
+	_, store, am, mux := newTestServer(t, "")
+	tok := adminToken(t, am)
+
+	body := `{"client_name":"acme-bot","client_role":"user","scopes":"fx.*","enabled":true}`
+	req := httptest.NewRequest(http.MethodPost, "/api/tokens", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create token: expected 200, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		ClientName string `json:"client_name"`
+		Token      string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v (body=%s)", err, rec.Body.String())
+	}
+	if resp.Token == "" {
+		t.Fatalf("expected a non-empty plaintext token in the create response")
+	}
+
+	// The store must be able to resolve the plaintext via its hash lookup...
+	stored, err := store.GetClientToken(t.Context(), resp.Token)
+	if err != nil {
+		t.Fatalf("GetClientToken(plaintext): %v", err)
+	}
+	if stored.ClientName != "acme-bot" {
+		t.Fatalf("stored token client_name = %q, want acme-bot", stored.ClientName)
+	}
+	// ...but never retains the plaintext itself: every listed token's Token
+	// field must be empty (mirrors storage.DB semantics, see MockStore).
+	if stored.Token != "" {
+		t.Fatalf("stored token must not retain plaintext, got %q", stored.Token)
+	}
+
+	tokens, err := store.GetClientTokens(t.Context())
+	if err != nil {
+		t.Fatalf("GetClientTokens: %v", err)
+	}
+	for _, tk := range tokens {
+		if tk.Token != "" {
+			t.Fatalf("GetClientTokens must never expose a plaintext token, got %q for %q", tk.Token, tk.ClientName)
+		}
+		if tk.Token == resp.Token {
+			t.Fatalf("plaintext token leaked into listed tokens")
+		}
+	}
+}
+
+func TestHandleTokens_MissingClientName_BadRequest(t *testing.T) {
+	_, _, am, mux := newTestServer(t, "")
+	tok := adminToken(t, am)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/tokens", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when client_name is missing, got %d (body=%s)", rec.Code, rec.Body.String())
 	}
 }
 
