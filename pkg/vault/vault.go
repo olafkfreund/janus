@@ -209,7 +209,9 @@ var errNotImplemented = fmt.Errorf("vault provider not implemented")
 //
 //   - local:    file-based, single-node/dev only (per-pod, not shared)
 //   - postgres: encrypted secrets in the shared DB — correct for multi-replica
-//   - aws/gcp/azure: not yet implemented (fails closed rather than returning fakes)
+//   - aws:      AWS Secrets Manager, via the pod's IRSA role (AWS_SECRETS_PREFIX
+//     namespaces the gateway's secrets)
+//   - gcp/azure: not yet implemented (fail closed rather than returning fakes)
 //
 // db is used only by the postgres provider; encKey is used by both local
 // (file encryption) and postgres.
@@ -219,8 +221,10 @@ func InitVault(provider, localPath string, db *sql.DB, encKey string) (VaultProv
 		return NewLocalVault(localPath, encKey)
 	case "postgres":
 		return NewPostgresVault(db, encKey)
-	case "aws", "gcp", "azure":
-		return nil, fmt.Errorf("%w: %q (use 'local'/'postgres' or implement this provider)", errNotImplemented, provider)
+	case "aws":
+		return NewAWSVault(context.Background(), os.Getenv("AWS_SECRETS_PREFIX"))
+	case "gcp", "azure":
+		return nil, fmt.Errorf("%w: %q (only 'aws' is wired among cloud providers; use 'local'/'postgres' or implement this provider)", errNotImplemented, provider)
 	default:
 		return nil, fmt.Errorf("unknown vault provider: %s", provider)
 	}

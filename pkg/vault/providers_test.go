@@ -20,9 +20,10 @@ const providersTestEncKey = "providers-test-vault-key-32bytes!!"
 // for a cloud provider that has no real backend wired up returns an error
 // (wrapping errNotImplemented) rather than a usable VaultProvider or fake
 // secrets. This is the crux of the "fail closed, not fake" contract
-// documented on InitVault.
+// documented on InitVault. ("aws" is now implemented — see
+// TestInitVault_AWSConstructs — so only gcp/azure remain fail-closed.)
 func TestInitVault_UnimplementedCloudProvidersFailClosed(t *testing.T) {
-	for _, provider := range []string{"aws", "gcp", "azure"} {
+	for _, provider := range []string{"gcp", "azure"} {
 		t.Run(provider, func(t *testing.T) {
 			v, err := InitVault(provider, "", nil, providersTestEncKey)
 			if err == nil {
@@ -35,6 +36,28 @@ func TestInitVault_UnimplementedCloudProvidersFailClosed(t *testing.T) {
 				t.Fatalf("InitVault(%q): error = %v, want it to wrap errNotImplemented", provider, err)
 			}
 		})
+	}
+}
+
+// TestInitVault_AWSConstructs verifies the "aws" provider now dispatches to a
+// real AWSVault. Construction loads ambient AWS config but does not call AWS or
+// validate credentials, so it succeeds deterministically even without AWS env.
+func TestInitVault_AWSConstructs(t *testing.T) {
+	t.Setenv("AWS_SECRETS_PREFIX", "janus/")
+	// A region is not required to construct the client; set one so the SDK's
+	// config load never probes IMDS in constrained CI.
+	t.Setenv("AWS_REGION", "eu-west-2")
+
+	v, err := InitVault("aws", "", nil, providersTestEncKey)
+	if err != nil {
+		t.Fatalf("InitVault(aws): %v", err)
+	}
+	av, ok := v.(*AWSVault)
+	if !ok {
+		t.Fatalf("InitVault(aws): got %T, want *AWSVault", v)
+	}
+	if av.prefix != "janus/" {
+		t.Fatalf("AWSVault.prefix = %q, want %q (from AWS_SECRETS_PREFIX)", av.prefix, "janus/")
 	}
 }
 
