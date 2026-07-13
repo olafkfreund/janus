@@ -3,9 +3,12 @@ package storage
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // --- d.query: '?' -> '$n' placeholder rewrite (Postgres) / passthrough (SQLite) ---
@@ -549,5 +552,410 @@ func TestGetAllEndpoints_multipleConnections(t *testing.T) {
 	}
 	if len(epsForB) != 1 || epsForB[0].ID != epB.ID {
 		t.Errorf("GetEndpoints(connB) = %+v, want only [%q]", epsForB, epB.ID)
+	}
+}
+
+// --- GetConnection / DeleteConnection ---
+
+func TestGetConnection_foundAndNotFound(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	conn := &APIConnection{ID: "conn-single", Name: "single-api", BaseURL: "https://single.example.com", AuthType: "none", Enabled: true, ToolPrefix: "single_"}
+	if err := d.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+
+	got, err := d.GetConnection(ctx, conn.ID)
+	if err != nil {
+		t.Fatalf("GetConnection() error = %v", err)
+	}
+	if got.Name != conn.Name || got.ToolPrefix != conn.ToolPrefix {
+		t.Errorf("GetConnection() = %+v, want matching %+v", got, conn)
+	}
+
+	if _, err := d.GetConnection(ctx, "does-not-exist"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetConnection(missing) error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestDeleteConnection_removesRow(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	conn := &APIConnection{ID: "conn-del", Name: "del-api", BaseURL: "https://del.example.com", AuthType: "none", Enabled: true}
+	if err := d.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	if _, err := d.GetConnection(ctx, conn.ID); err != nil {
+		t.Fatalf("GetConnection() before delete error = %v", err)
+	}
+
+	if err := d.DeleteConnection(ctx, conn.ID); err != nil {
+		t.Fatalf("DeleteConnection() error = %v", err)
+	}
+
+	if _, err := d.GetConnection(ctx, conn.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetConnection() after delete error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+// --- GetEndpointByToolName / DeleteEndpoint ---
+
+func TestGetEndpointByToolName_foundAndNotFound(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	conn := &APIConnection{ID: "conn-tn", Name: "toolname-api", BaseURL: "https://tn.example.com", AuthType: "none", Enabled: true}
+	if err := d.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	ep := &APIEndpoint{ID: "ep-tn", ConnectionID: conn.ID, ToolName: "tn_get_thing", ToolDescription: "Get thing", Path: "/thing", Method: "GET"}
+	if err := d.SaveEndpoint(ctx, ep); err != nil {
+		t.Fatalf("SaveEndpoint() error = %v", err)
+	}
+
+	got, err := d.GetEndpointByToolName(ctx, "tn_get_thing")
+	if err != nil {
+		t.Fatalf("GetEndpointByToolName() error = %v", err)
+	}
+	if got.ID != ep.ID || got.Path != ep.Path {
+		t.Errorf("GetEndpointByToolName() = %+v, want matching %+v", got, ep)
+	}
+
+	if _, err := d.GetEndpointByToolName(ctx, "no_such_tool"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("GetEndpointByToolName(missing) error = %v, want sql.ErrNoRows", err)
+	}
+}
+
+func TestDeleteEndpoint_removesRow(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	conn := &APIConnection{ID: "conn-epdel", Name: "epdel-api", BaseURL: "https://epdel.example.com", AuthType: "none", Enabled: true}
+	if err := d.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	ep := &APIEndpoint{ID: "ep-del", ConnectionID: conn.ID, ToolName: "epdel_tool", ToolDescription: "desc", Path: "/x", Method: "GET"}
+	if err := d.SaveEndpoint(ctx, ep); err != nil {
+		t.Fatalf("SaveEndpoint() error = %v", err)
+	}
+
+	if err := d.DeleteEndpoint(ctx, ep.ID); err != nil {
+		t.Fatalf("DeleteEndpoint() error = %v", err)
+	}
+
+	all, err := d.GetAllEndpoints(ctx)
+	if err != nil {
+		t.Fatalf("GetAllEndpoints() error = %v", err)
+	}
+	for _, e := range all {
+		if e.ID == ep.ID {
+			t.Fatalf("endpoint %q still present after DeleteEndpoint()", ep.ID)
+		}
+	}
+}
+
+// --- Audit logs ---
+
+func TestLogAudit_and_GetAuditLogs(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	if err := d.LogAudit(ctx, "audit-1", "client-a", "tool_one", "success", 12, ""); err != nil {
+		t.Fatalf("LogAudit(1) error = %v", err)
+	}
+	// Sleep-free ordering: rely on ORDER BY timestamp DESC plus insertion order;
+	// give the second row a distinguishable error message to verify NULL handling
+	// is symmetric with population (COALESCE(..., '') round-trips through '').
+	if err := d.LogAudit(ctx, "audit-2", "client-b", "tool_two", "error", 34, "boom"); err != nil {
+		t.Fatalf("LogAudit(2) error = %v", err)
+	}
+
+	logs, err := d.GetAuditLogs(ctx)
+	if err != nil {
+		t.Fatalf("GetAuditLogs() error = %v", err)
+	}
+	if len(logs) != 2 {
+		t.Fatalf("GetAuditLogs() returned %d logs, want 2", len(logs))
+	}
+
+	byID := map[string]*AuditLog{}
+	for _, l := range logs {
+		byID[l.ID] = l
+	}
+
+	first, ok := byID["audit-1"]
+	if !ok {
+		t.Fatalf("audit-1 not found in GetAuditLogs() result")
+	}
+	if first.ClientIdentity != "client-a" || first.ToolName != "tool_one" || first.Status != "success" || first.DurationMS != 12 {
+		t.Errorf("audit-1 = %+v, mismatch", first)
+	}
+	if first.ErrorMessage != "" {
+		t.Errorf("audit-1 ErrorMessage = %q, want empty (NULL coalesced)", first.ErrorMessage)
+	}
+
+	second, ok := byID["audit-2"]
+	if !ok {
+		t.Fatalf("audit-2 not found in GetAuditLogs() result")
+	}
+	if second.ErrorMessage != "boom" {
+		t.Errorf("audit-2 ErrorMessage = %q, want %q", second.ErrorMessage, "boom")
+	}
+}
+
+// --- DeleteClientToken / DeleteClientTokenByName / GetClientTokens ---
+
+func TestDeleteClientToken_byRawToken(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	plaintext := "raw-token-to-delete"
+	tok := &ClientToken{Token: plaintext, ClientName: "delete-me", ClientRole: "developer", Scopes: "*", Enabled: true}
+	if err := d.SaveClientToken(ctx, tok); err != nil {
+		t.Fatalf("SaveClientToken() error = %v", err)
+	}
+	if _, err := d.GetClientToken(ctx, plaintext); err != nil {
+		t.Fatalf("GetClientToken() before delete error = %v", err)
+	}
+
+	if err := d.DeleteClientToken(ctx, plaintext); err != nil {
+		t.Fatalf("DeleteClientToken() error = %v", err)
+	}
+
+	if _, err := d.GetClientToken(ctx, plaintext); err == nil {
+		t.Errorf("GetClientToken() after DeleteClientToken() unexpectedly succeeded")
+	}
+}
+
+func TestDeleteClientTokenByName_revokesRegardlessOfPlaintext(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	plaintext := "raw-token-by-name"
+	tok := &ClientToken{Token: plaintext, ClientName: "named-client", ClientRole: "developer", Scopes: "*", Enabled: true}
+	if err := d.SaveClientToken(ctx, tok); err != nil {
+		t.Fatalf("SaveClientToken() error = %v", err)
+	}
+
+	// Admin path: revoke by name alone, without ever knowing the plaintext.
+	if err := d.DeleteClientTokenByName(ctx, "named-client"); err != nil {
+		t.Fatalf("DeleteClientTokenByName() error = %v", err)
+	}
+
+	if _, err := d.GetClientToken(ctx, plaintext); err == nil {
+		t.Errorf("GetClientToken() after DeleteClientTokenByName() unexpectedly succeeded")
+	}
+}
+
+func TestGetClientTokens_listsAndScrubsTokenField(t *testing.T) {
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	tokA := &ClientToken{Token: "plain-a", ClientName: "client-a", ClientRole: "admin", Scopes: "*", Enabled: true}
+	tokB := &ClientToken{Token: "plain-b", ClientName: "client-b", ClientRole: "developer", Scopes: "weather_*", Enabled: false}
+	if err := d.SaveClientToken(ctx, tokA); err != nil {
+		t.Fatalf("SaveClientToken(A) error = %v", err)
+	}
+	if err := d.SaveClientToken(ctx, tokB); err != nil {
+		t.Fatalf("SaveClientToken(B) error = %v", err)
+	}
+
+	all, err := d.GetClientTokens(ctx)
+	if err != nil {
+		t.Fatalf("GetClientTokens() error = %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("GetClientTokens() returned %d tokens, want 2", len(all))
+	}
+
+	byName := map[string]*ClientToken{}
+	for _, tk := range all {
+		byName[tk.ClientName] = tk
+		if tk.Token != "" {
+			t.Errorf("GetClientTokens(): token %q leaked plaintext/hash %q, want scrubbed", tk.ClientName, tk.Token)
+		}
+	}
+	if !byName["client-a"].Enabled {
+		t.Errorf("client-a Enabled = false, want true")
+	}
+	if byName["client-b"].Enabled {
+		t.Errorf("client-b Enabled = true, want false")
+	}
+	if byName["client-b"].Scopes != "weather_*" {
+		t.Errorf("client-b Scopes = %q, want %q", byName["client-b"].Scopes, "weather_*")
+	}
+}
+
+// --- Config cache: EnableConfigCache + bust-on-write ---
+
+func TestConfigCache_connectionsBustOnWrite(t *testing.T) {
+	d := newTestDB(t)
+	d.EnableConfigCache(time.Minute)
+	ctx := context.Background()
+
+	conn := &APIConnection{ID: "conn-cache-1", Name: "cache-api-1", BaseURL: "https://cache1.example.com", AuthType: "none", Enabled: true}
+	if err := d.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+
+	first, err := d.GetConnections(ctx)
+	if err != nil {
+		t.Fatalf("GetConnections() (prime cache) error = %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("GetConnections() = %d entries, want 1", len(first))
+	}
+
+	// Insert a second connection directly via SaveConnection, which purges
+	// the cache; a subsequent read must observe the new row rather than the
+	// stale cached slice.
+	conn2 := &APIConnection{ID: "conn-cache-2", Name: "cache-api-2", BaseURL: "https://cache2.example.com", AuthType: "none", Enabled: true}
+	if err := d.SaveConnection(ctx, conn2); err != nil {
+		t.Fatalf("SaveConnection(2) error = %v", err)
+	}
+
+	second, err := d.GetConnections(ctx)
+	if err != nil {
+		t.Fatalf("GetConnections() (post-write) error = %v", err)
+	}
+	if len(second) != 2 {
+		t.Fatalf("GetConnections() after write = %d entries, want 2 (cache not busted)", len(second))
+	}
+
+	// DeleteConnection must also bust the cache.
+	if err := d.DeleteConnection(ctx, conn2.ID); err != nil {
+		t.Fatalf("DeleteConnection() error = %v", err)
+	}
+	third, err := d.GetConnections(ctx)
+	if err != nil {
+		t.Fatalf("GetConnections() (post-delete) error = %v", err)
+	}
+	if len(third) != 1 {
+		t.Fatalf("GetConnections() after delete = %d entries, want 1 (cache not busted)", len(third))
+	}
+}
+
+func TestConfigCache_endpointsBustOnWrite(t *testing.T) {
+	d := newTestDB(t)
+	d.EnableConfigCache(time.Minute)
+	ctx := context.Background()
+
+	conn := &APIConnection{ID: "conn-cache-ep", Name: "cache-ep-api", BaseURL: "https://cacheep.example.com", AuthType: "none", Enabled: true}
+	if err := d.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	ep1 := &APIEndpoint{ID: "ep-cache-1", ConnectionID: conn.ID, ToolName: "cache_tool_1", ToolDescription: "d1", Path: "/1", Method: "GET"}
+	if err := d.SaveEndpoint(ctx, ep1); err != nil {
+		t.Fatalf("SaveEndpoint(1) error = %v", err)
+	}
+
+	first, err := d.GetAllEndpoints(ctx)
+	if err != nil {
+		t.Fatalf("GetAllEndpoints() (prime cache) error = %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("GetAllEndpoints() = %d entries, want 1", len(first))
+	}
+
+	ep2 := &APIEndpoint{ID: "ep-cache-2", ConnectionID: conn.ID, ToolName: "cache_tool_2", ToolDescription: "d2", Path: "/2", Method: "GET"}
+	if err := d.SaveEndpoint(ctx, ep2); err != nil {
+		t.Fatalf("SaveEndpoint(2) error = %v", err)
+	}
+
+	second, err := d.GetAllEndpoints(ctx)
+	if err != nil {
+		t.Fatalf("GetAllEndpoints() (post-write) error = %v", err)
+	}
+	if len(second) != 2 {
+		t.Fatalf("GetAllEndpoints() after write = %d entries, want 2 (cache not busted)", len(second))
+	}
+
+	if err := d.DeleteEndpoint(ctx, ep2.ID); err != nil {
+		t.Fatalf("DeleteEndpoint() error = %v", err)
+	}
+	third, err := d.GetAllEndpoints(ctx)
+	if err != nil {
+		t.Fatalf("GetAllEndpoints() (post-delete) error = %v", err)
+	}
+	if len(third) != 1 {
+		t.Fatalf("GetAllEndpoints() after delete = %d entries, want 1 (cache not busted)", len(third))
+	}
+}
+
+func TestConfigCache_disabledByDefault_alwaysHitsDB(t *testing.T) {
+	// Without EnableConfigCache, GetConnections must reflect every write
+	// immediately since d.connCache is nil (Get/Set on a nil *TTLCache are
+	// no-ops per pkg/cache's nil-receiver guard).
+	d := newTestDB(t)
+	ctx := context.Background()
+
+	conn := &APIConnection{ID: "conn-nocache", Name: "nocache-api", BaseURL: "https://nocache.example.com", AuthType: "none", Enabled: true}
+	if err := d.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	conns, err := d.GetConnections(ctx)
+	if err != nil {
+		t.Fatalf("GetConnections() error = %v", err)
+	}
+	if len(conns) != 1 {
+		t.Fatalf("GetConnections() = %d entries, want 1", len(conns))
+	}
+}
+
+// --- TunePool ---
+
+func TestTunePool_appliesNonZeroSettings(t *testing.T) {
+	d := newTestDB(t)
+
+	// Zero values must be no-ops (left at *sql.DB defaults); non-zero values
+	// must be applied. We can't introspect *sql.DB's configured limits
+	// directly, so this exercises all branches and asserts the pool still
+	// works afterwards (no panic, queries still succeed).
+	d.TunePool(0, 0, 0)
+	d.TunePool(5, 2, time.Minute)
+
+	ctx := context.Background()
+	if _, err := d.GetConnections(ctx); err != nil {
+		t.Fatalf("GetConnections() after TunePool() error = %v", err)
+	}
+}
+
+// --- NewDB reopened on the same path: exercises initSchema's ALTER TABLE
+// "column already exists" branches, which only fire on a second run against
+// a database that already has the columns. ---
+
+func TestNewDB_reopenSamePathRunsSchemaIdempotently(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reopen.db")
+
+	d1, err := NewDB(dbPath)
+	if err != nil {
+		t.Fatalf("NewDB() (first open) error = %v", err)
+	}
+	ctx := context.Background()
+	conn := &APIConnection{ID: "conn-reopen", Name: "reopen-api", BaseURL: "https://reopen.example.com", AuthType: "none", Enabled: true}
+	if err := d1.SaveConnection(ctx, conn); err != nil {
+		t.Fatalf("SaveConnection() error = %v", err)
+	}
+	if err := d1.Close(); err != nil {
+		t.Fatalf("Close() (first) error = %v", err)
+	}
+
+	// Reopening the same file re-runs initSchema, including the ALTER TABLE
+	// statements against columns that already exist; NewDB must treat that
+	// as success rather than propagating the driver's "duplicate column" error.
+	d2, err := NewDB(dbPath)
+	if err != nil {
+		t.Fatalf("NewDB() (second open / re-init schema) error = %v", err)
+	}
+	defer d2.Close()
+
+	conns, err := d2.GetConnections(ctx)
+	if err != nil {
+		t.Fatalf("GetConnections() after reopen error = %v", err)
+	}
+	if len(conns) != 1 || conns[0].ID != conn.ID {
+		t.Errorf("GetConnections() after reopen = %+v, want persisted row %+v", conns, conn)
 	}
 }
