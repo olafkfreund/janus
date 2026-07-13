@@ -32,6 +32,12 @@ jobs:
   build-and-deploy:
     name: Build, Push ECR & Deploy EKS
     needs: validate-and-test
+    # Deploy targets OUR AWS account (796973489124) + EKS cluster (sarc-aws) via
+    # OIDC trust that only exists for this repo. On mirrors (e.g. the Synechron
+    # fork) there is no AWS_DEPLOY_ROLE_ARN / OIDC trust, so this job would fail
+    # at "Configure AWS Credentials". Skip it everywhere except the canonical
+    # repo — validate-and-test still runs on mirrors, so the workflow stays green.
+    if: github.repository == 'olafkfreund/janus'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
