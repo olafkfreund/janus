@@ -5,6 +5,7 @@ docs_dir: doc
 
 nav:
   - Welcome & Quick Start: index.md
+  - Technical Overview: technical-overview.md
   - Architecture Proposal: lch_concorde_mcp_proposal.md
   - Customer Environment Integration: customer_environment_integration.md
   - Rollout & Demo Guide: demo_and_rollout_guide.md
