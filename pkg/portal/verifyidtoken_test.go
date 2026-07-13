@@ -20,6 +20,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,16 +104,28 @@ func signNoneAlg(t *testing.T, claims jwt.MapClaims) string {
 	return signed
 }
 
-// tamperSignature flips the last character of a JWT's signature segment so
+// tamperSignature flips an INTERIOR character of a JWT's signature segment so
 // the token still parses (three dot-separated base64url segments) but its
-// signature no longer verifies.
+// signature no longer verifies. It deliberately avoids the final character:
+// for a 256-byte RSA signature the last base64url char encodes only the low 2
+// bits of the last byte, so several distinct chars decode identically — a
+// last-char flip leaves the signature unchanged ~25% of the time (whenever it
+// is 'A'), which made this test flaky on a per-key basis. An interior char
+// encodes a full 6 bits, so any change always alters the decoded bytes.
 func tamperSignature(t *testing.T, tok string) string {
 	t.Helper()
-	i := len(tok) - 1
-	if tok[i] == 'A' {
-		return tok[:i] + "B"
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 || len(parts[2]) == 0 {
+		t.Fatalf("unexpected JWT shape (want header.payload.signature): %q", tok)
 	}
-	return tok[:i] + "A"
+	sig := []byte(parts[2])
+	if sig[0] == 'A' {
+		sig[0] = 'B'
+	} else {
+		sig[0] = 'A'
+	}
+	parts[2] = string(sig)
+	return strings.Join(parts, ".")
 }
 
 func TestVerifyIDToken(t *testing.T) {
@@ -125,6 +138,14 @@ func TestVerifyIDToken(t *testing.T) {
 	}
 	server := oidcTestServer(t, kid, &key.PublicKey)
 	trustTestServer(t, server)
+
+	// Isolate from any JWKS cached by a prior run: the in-memory jwksCache is
+	// process-global and keyed by issuer URL, and httptest reuses ports across
+	// iterations, so under `-count` a fresh server+key could otherwise be served
+	// a stale cached key and reject an otherwise-valid token.
+	jwksCacheMu.Lock()
+	jwksCache = map[string]*jwksCacheEntry{}
+	jwksCacheMu.Unlock()
 
 	p := &PortalServer{config: &config.Config{OIDCIssuer: server.URL, OIDCClientID: clientID}}
 
