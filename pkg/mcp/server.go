@@ -24,8 +24,10 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/toolintegrity"
 	"github.com/calitti/mcp-api-gateway/pkg/vault"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -120,6 +122,11 @@ type MCPServer struct {
 	oauthValidator    *oauth.Validator
 	oauthChallengeCfg oauth.Config
 
+	// oauthRBAC, when non-nil (via SetOAuthRBAC), maps a validated OAuth
+	// token's IdP group claims to the gateway role+scopes. Nil (default)
+	// preserves the flat "user" role + token-scopes behavior.
+	oauthRBAC *oauthRBAC
+
 	// redactor, when non-nil (via EnableRedaction), masks PII/secrets in
 	// tool-call arguments before execution and in tool results before they
 	// are returned to the client. Nil (default) disables redaction entirely.
@@ -185,6 +192,87 @@ func NewMCPServer(db storage.Store, client *gateway.GatewayClient, vp vault.Vaul
 func (s *MCPServer) EnableOAuth(v *oauth.Validator, challengeCfg oauth.Config) {
 	s.oauthValidator = v
 	s.oauthChallengeCfg = challengeCfg
+}
+
+// oauthRBAC maps an IdP's group claims (carried on a validated OAuth access
+// token) to the gateway's role and scopes. This is how enterprise-managed
+// authorization — where a central IdP owns group/role membership — drives
+// tool visibility here. It is fail-closed: a user in no mapped group receives
+// the "user" role and no scopes (hence no tools), and the admin role is
+// granted only to members of an explicitly configured admin group.
+type oauthRBAC struct {
+	groupsClaim string              // token claim holding the user's groups (e.g. "groups")
+	groupScopes map[string][]string // group -> granted gateway scopes
+	adminGroups map[string]bool     // groups whose members get the admin role
+}
+
+// SetOAuthRBAC enables enterprise group→role/scope mapping for OAuth clients.
+// groupsClaim is the token claim to read groups from; groupScopes maps each
+// group to the scopes it grants; adminGroups lists groups whose members get
+// the admin role. Passing an empty groupScopes and adminGroups leaves the
+// mapping disabled (flat "user" + token scopes). Off by default.
+func (s *MCPServer) SetOAuthRBAC(groupsClaim string, groupScopes map[string][]string, adminGroups []string) {
+	if len(groupScopes) == 0 && len(adminGroups) == 0 {
+		s.oauthRBAC = nil
+		return
+	}
+	if groupsClaim == "" {
+		groupsClaim = "groups"
+	}
+	admin := make(map[string]bool, len(adminGroups))
+	for _, g := range adminGroups {
+		admin[g] = true
+	}
+	s.oauthRBAC = &oauthRBAC{groupsClaim: groupsClaim, groupScopes: groupScopes, adminGroups: admin}
+}
+
+// resolve maps a validated token's group claims to a gateway role and the
+// union of scopes granted by those groups. Fail-closed: no matching group →
+// ("user", nil). Admin role requires membership in a configured admin group
+// (and, separately, an admin_* scope must still be granted for admin tools to
+// be callable — role and scope are both enforced downstream).
+func (m *oauthRBAC) resolve(claims *oauth.Claims) (role string, scopes []string) {
+	role = "user"
+	seen := map[string]bool{}
+	for _, g := range extractGroups(claims.Raw, m.groupsClaim) {
+		if m.adminGroups[g] {
+			role = "admin"
+		}
+		for _, sc := range m.groupScopes[g] {
+			if !seen[sc] {
+				seen[sc] = true
+				scopes = append(scopes, sc)
+			}
+		}
+	}
+	return role, scopes
+}
+
+// extractGroups reads the named claim from a token's raw claims and returns
+// the group names, accepting either a JSON array of strings or a single
+// string. Returns nil when the claim is absent or of an unexpected shape.
+func extractGroups(raw map[string]any, claim string) []string {
+	if raw == nil || claim == "" {
+		return nil
+	}
+	switch t := raw[claim].(type) {
+	case string:
+		if t == "" {
+			return nil
+		}
+		return []string{t}
+	case []string:
+		return t
+	case []any:
+		var out []string
+		for _, e := range t {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // EnableRedaction turns on PII/secret redaction of tool-call arguments
@@ -353,10 +441,13 @@ func (s *MCPServer) StartStdioMode(ctx context.Context) {
 // resolveAuth maps a presented token to a client identity/role/scopes.
 // Master GATEWAY_TOKEN → admin/*; an enabled DB client token → its
 // role+scopes; and, when EnableOAuth has been called, a valid OAuth 2.1
-// access token → its scopes, mapped to a non-admin "user" role (OAuth
-// clients can never reach admin_-prefixed tools regardless of the token's
-// own scopes — admin access is only ever granted via the master token or a
-// client token explicitly provisioned with the admin role).
+// access token → its scopes with a non-admin "user" role by default. When
+// SetOAuthRBAC has additionally been configured, the token's IdP group claims
+// drive the role+scopes instead (enterprise-managed authorization) — and only
+// then can an OAuth client be granted the admin role, via an explicitly
+// configured admin group. Without that mapping, OAuth clients never reach
+// admin_-prefixed tools; admin is otherwise only the master or an admin-role
+// client token.
 func (s *MCPServer) resolveAuth(ctx context.Context, token string) (identity, role string, scopes []string, ok bool) {
 	if s.authManager.VerifyGatewayToken(token) {
 		return "master", "admin", []string{"*"}, true
@@ -374,6 +465,10 @@ func (s *MCPServer) resolveAuth(ctx context.Context, token string) (identity, ro
 			identity = claims.Subject
 			if identity == "" {
 				identity = "oauth-client"
+			}
+			if s.oauthRBAC != nil {
+				role, scopes := s.oauthRBAC.resolve(claims)
+				return identity, role, scopes, true
 			}
 			return identity, "user", claims.Scopes, true
 		}
@@ -406,7 +501,10 @@ func (s *MCPServer) ServeStreamable(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	resp := s.handleRequest(r.Context(), identity, role, scopes, &req)
+	// Continue any trace started upstream (W3C traceparent/tracestate/baggage)
+	// so the gateway's spans join the caller's trace rather than starting anew.
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	resp := s.handleRequest(ctx, identity, role, scopes, &req)
 	// Supply a session id on initialize for clients that track one (we stay stateless).
 	if req.Method == "initialize" {
 		w.Header().Set("Mcp-Session-Id", uuid.New().String())
@@ -558,7 +656,8 @@ func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.handleRequest(r.Context(), session.ClientIdentity, session.ClientRole, session.Scopes, &req)
+	ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+	resp := s.handleRequest(ctx, session.ClientIdentity, session.ClientRole, session.Scopes, &req)
 	payload, err := json.Marshal(resp)
 	if err != nil {
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)

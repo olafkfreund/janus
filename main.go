@@ -103,6 +103,11 @@ func main() {
 		}
 		mcpServer.EnableOAuth(validator, oauthCfg)
 		log.Printf("OAuth resource-server validation enabled (resource=%s)", cfg.OAuthResourceURI)
+		if len(cfg.OAuthGroupScopes) > 0 || len(cfg.OAuthAdminGroups) > 0 {
+			mcpServer.SetOAuthRBAC(cfg.OAuthGroupsClaim, cfg.OAuthGroupScopes, cfg.OAuthAdminGroups)
+			log.Printf("OAuth enterprise RBAC enabled (groups claim=%q, %d mapped groups, %d admin groups)",
+				cfg.OAuthGroupsClaim, len(cfg.OAuthGroupScopes), len(cfg.OAuthAdminGroups))
+		}
 	}
 	if cfg.RedactionEnabled {
 		redactor, err := redaction.New(redaction.Config{Enabled: true})

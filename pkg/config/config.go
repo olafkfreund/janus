@@ -60,8 +60,16 @@ type Config struct {
 	OAuthResourceURI          string   // Canonical resource URI for this gateway (required when OAuthEnabled)
 	OAuthAuthorizationServers []string // Authorization server issuer URLs (required when OAuthEnabled)
 	OAuthScopesSupported      []string // Scopes advertised in protected-resource metadata
-	RedactionEnabled          bool     // Redact sensitive fields in logs/audit trail (off by default)
-	ToolPinningStrict         bool     // Reject tool-call args that don't match a pinned tool schema (off by default)
+	// Enterprise RBAC mapping (opt-in): map IdP group/role claims on a
+	// validated OAuth token to gateway scopes/roles. When unset, OAuth clients
+	// keep the flat "user" role + the token's own scopes. When set, the IdP
+	// groups are authoritative (the token's scope claim is ignored) and a user
+	// in no mapped group gets no tool access — fail closed.
+	OAuthGroupsClaim  string              // Token claim holding the user's groups (default "groups")
+	OAuthGroupScopes  map[string][]string // group -> granted gateway scopes
+	OAuthAdminGroups  []string            // groups whose members get the admin role
+	RedactionEnabled  bool                // Redact sensitive fields in logs/audit trail (off by default)
+	ToolPinningStrict bool                // Reject tool-call args that don't match a pinned tool schema (off by default)
 }
 
 // minSecretLen is the minimum acceptable length for security-critical secrets.
@@ -118,6 +126,9 @@ func LoadConfig() (*Config, error) {
 		OAuthResourceURI:          getEnv("OAUTH_RESOURCE_URI", ""),
 		OAuthAuthorizationServers: splitList(os.Getenv("OAUTH_AUTHORIZATION_SERVERS")),
 		OAuthScopesSupported:      splitList(os.Getenv("OAUTH_SCOPES_SUPPORTED")),
+		OAuthGroupsClaim:          getEnv("OAUTH_GROUPS_CLAIM", "groups"),
+		OAuthGroupScopes:          parseGroupScopeMap(os.Getenv("OAUTH_GROUP_SCOPE_MAP")),
+		OAuthAdminGroups:          splitList(os.Getenv("OAUTH_ADMIN_GROUPS")),
 		RedactionEnabled:          getBool("REDACTION_ENABLED", false),
 		ToolPinningStrict:         getBool("TOOL_PINNING_STRICT", false),
 	}
@@ -274,6 +285,29 @@ func splitList(v string) []string {
 		if t := strings.TrimSpace(p); t != "" {
 			out = append(out, t)
 		}
+	}
+	return out
+}
+
+// parseGroupScopeMap parses an OAUTH_GROUP_SCOPE_MAP value of the form
+// "group:scopeA,scopeB;group2:scopeC" into a map of group -> granted scopes.
+// Whitespace is trimmed; segments without a colon, an empty group, or no
+// scopes are skipped. Returns nil when nothing usable is configured (which
+// leaves the enterprise RBAC mapping disabled).
+func parseGroupScopeMap(v string) map[string][]string {
+	out := map[string][]string{}
+	for _, seg := range strings.Split(v, ";") {
+		group, scopeList, ok := strings.Cut(seg, ":")
+		group = strings.TrimSpace(group)
+		if !ok || group == "" {
+			continue
+		}
+		if scopes := splitList(scopeList); len(scopes) > 0 {
+			out[group] = scopes
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

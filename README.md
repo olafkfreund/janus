@@ -5,8 +5,9 @@ An enterprise-grade, high-performance API Gateway and Web Portal that translates
 ## Features
 - **Dynamic MCP Tool Translation**: Declare connection endpoints and map request body/parameters to JSON Schema templates. The gateway automatically generates MCP-compliant tool definitions.
 - **Dual MCP Transports**:
-  - **Streamable HTTP** (2025 spec, recommended): stateless `POST /mcp` (or `POST /sse`) — a JSON-RPC request in, the response in the body. No pinned stream, so it **scales across replicas**. Used by Antigravity and by Claude Code (`type: "http"`).
+  - **Streamable HTTP** (recommended): stateless `POST /mcp` (or `POST /sse`) — a JSON-RPC request in, the response in the body. No pinned stream, so it **scales across replicas**. Used by Antigravity and by Claude Code (`type: "http"`). This matches the direction of the [MCP 2026-07-28 spec](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/), which makes the protocol fully stateless (drops the `initialize` handshake and `Mcp-Session-Id`); the legacy SSE transport below is on that spec's 12-month deprecation path.
   - **Legacy HTTP+SSE**: `GET /sse` (stream) + `POST /messages`; the response is also pushed back over the SSE stream. Used by clients configured with `type: "sse"`.
+  - **Distributed tracing**: inbound [W3C Trace Context](https://www.w3.org/TR/trace-context/) headers (`traceparent`/`tracestate`/`baggage`) are propagated into the gateway's OpenTelemetry spans, so a trace that starts in the host/client SDK continues through tool execution and the downstream call.
 - **Enterprise Security** (see [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md)):
   - **Fail-closed config**: `JWT_SECRET` and `GATEWAY_TOKEN` must be ≥32 bytes or the process refuses to start — no usable default secrets.
   - **Authorization, not just authentication**: admin REST APIs are behind role-enforcing middleware (RBAC). Local admin login is enabled only when `ADMIN_PASSWORD` (≥12 chars) is set; otherwise OIDC/SSO only.
@@ -14,7 +15,8 @@ An enterprise-grade, high-performance API Gateway and Web Portal that translates
   - **Token-Authenticated MCP Clients**: scoped client tokens (glob scopes + roles), **hashed at rest** (SHA-256) and shown once. Header-only bearer tokens.
   - **OIDC/OAuth2 SSO** with `state` CSRF + issuer/audience/expiry validation; **mTLS & TLS 1.3**.
   - **Hardened edge**: per-IP rate limiting, HTTP read/write/idle timeouts, request body-size caps.
-  - **OAuth 2.1 resource server** *(opt-in, `OAUTH_ENABLED=true`)*: advertises protected-resource metadata at `GET /.well-known/oauth-protected-resource` (RFC 9728), emits `WWW-Authenticate` challenges, and validates audience-bound (RFC 8707) JWT access tokens against the configured authorization servers' JWKS. Coexists with the existing master/client-token auth.
+  - **OAuth 2.1 resource server** *(opt-in, `OAUTH_ENABLED=true`)*: advertises protected-resource metadata at `GET /.well-known/oauth-protected-resource` (RFC 9728), emits `WWW-Authenticate` challenges, and validates audience-bound (RFC 8707) JWT access tokens against the configured authorization servers' JWKS. Coexists with the existing master/client-token auth. This makes the gateway a ready resource server for [enterprise-managed authorization (ID-JAG)](https://blog.modelcontextprotocol.io/posts/enterprise-managed-auth/) — a token minted through that flow validates on the same path.
+  - **Enterprise RBAC from IdP groups** *(opt-in, `OAUTH_GROUP_SCOPE_MAP` / `OAUTH_ADMIN_GROUPS`)*: maps an OAuth token's IdP group claims (claim name via `OAUTH_GROUPS_CLAIM`, default `groups`) to gateway scopes and the admin role, so a central IdP owns access policy. **Fail-closed**: when configured, IdP groups are authoritative (the token's own scope claim is ignored) and a user in no mapped group gets no tool access; the admin role is granted only via an explicitly listed admin group. Unset ⇒ OAuth clients keep the flat `user` role + token scopes.
   - **Tool-definition hash pinning** *(rug-pull defense)*: every tool carries a SHA-256 `definitionHash` and a `version` (both surfaced in `tools/list`). With `TOOL_PINNING_STRICT=true`, a call is blocked if the tool's definition changed since it was approved.
   - **PII/secret redaction (DLP)** *(opt-in, `REDACTION_ENABLED=true`)*: masks emails, Luhn-validated credit-card numbers, JWTs, AWS keys, API keys, and IBANs in tool arguments and downstream responses **before they reach the LLM**; redaction events are audit-logged (class + count only, never the value).
 - **OpenAPI → MCP import**: turn an OpenAPI 3.x spec (JSON or YAML) into connections, endpoints, and tools in one shot — via `POST /api/import/openapi` (admin) or `mcp-cli import openapi <file|url>` (supports `--dry-run` and `--prefix`).
@@ -749,8 +751,9 @@ kubectl apply -f k8s-janus.yaml
 The gateway Deployment **omits `replicas`** — the HPA owns the count. Because state lives in Postgres (config, tokens, audit, and the AES-encrypted vault), pods are fully stateless. CI/CD deploys via GitHub Actions using **GitHub OIDC** (the `AWS_DEPLOY_ROLE_ARN` repo variable — no stored keys); see [`deployment/GITHUB_OIDC_SETUP.md`](deployment/GITHUB_OIDC_SETUP.md).
 
 #### 3. Transport & session routing
-- **Streamable HTTP (`/mcp`) is stateless** — any replica serves any request, so scale-out needs no session affinity. This is the recommended transport for multi-replica.
-- The **legacy `GET /sse` + `POST /messages`** transport is stateful (the stream is pinned to one pod). For it, the NGINX Ingress inserts a `route` cookie so the POST lands on the same pod. Clients that don't carry the cookie should use `/mcp` instead.
+- **Streamable HTTP (`/mcp`) is stateless** — any replica serves any request, so scale-out needs no session affinity. This is the recommended transport for multi-replica, and aligns with the [MCP 2026-07-28 spec](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/) making the protocol stateless by default.
+- The **legacy `GET /sse` + `POST /messages`** transport is stateful (the stream is pinned to one pod). For it, the NGINX Ingress inserts a `route` cookie so the POST lands on the same pod. Clients that don't carry the cookie should use `/mcp` instead. This transport is deprecated by the 2026-07-28 spec (12-month removal window); the cookie-affinity requirement disappears once clients migrate to `/mcp`.
+- **Trace continuity**: both POST entry points extract W3C `traceparent`/`tracestate`/`baggage` and continue the caller's trace, so distributed traces span the client SDK, the gateway, and the downstream API even across replicas.
 
 ---
 
@@ -806,6 +809,6 @@ The gateway parses the parameter `member_id`, forwards the query to the underlyi
 - `pkg/mcp`: MCP JSON-RPC — Streamable HTTP (`/mcp`) + legacy HTTP+SSE (`/sse`, `/messages`).
 - `pkg/portal`: Admin REST API, OIDC/local login, OpenAPI, embedded SPA (`static/`).
 - `pkg/cache`: Generic dependency-free TTL cache.
-- `pkg/telemetry`: OpenTelemetry + Prometheus metrics.
+- `pkg/telemetry`: OpenTelemetry + Prometheus metrics; W3C Trace Context propagator (continues inbound `traceparent`/`tracestate`/`baggage`).
 - `k8s-janus.yaml`, `k8s/janus-db.yaml`, `k8s/janus-scaling.yaml`: Kubernetes manifests (see Scenario E).
 - `SECURITY_REVIEW.md`, `SCALING_AND_CACHING.md`, `deployment/GITHUB_OIDC_SETUP.md`: security, scaling, and deploy docs.

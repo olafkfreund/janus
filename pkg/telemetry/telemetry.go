@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -44,6 +45,14 @@ func InitTelemetry(serviceName string) (*sdktrace.TracerProvider, error) {
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
+	// Register the W3C Trace Context + Baggage propagator so a trace started in
+	// the calling host/client SDK (traceparent/tracestate/baggage headers) is
+	// continued through the gateway instead of starting a fresh, disconnected
+	// trace. Without this, otel's Extract is a silent no-op.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
 	Tracer = otel.Tracer("mcp-api-gateway")
 
 	// 3. Set up Metrics with Prometheus Exporter
