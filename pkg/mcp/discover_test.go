@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/calitti/mcp-api-gateway/pkg/storage"
 )
 
 func metaParams(version string) json.RawMessage {
@@ -77,6 +79,65 @@ func TestHandleRequest_ServerDiscover(t *testing.T) {
 	}
 	if res["ttlMs"] == nil || res["cacheScope"] != "public" {
 		t.Errorf("missing cache hints: ttlMs=%v cacheScope=%v", res["ttlMs"], res["cacheScope"])
+	}
+}
+
+// tools/list returns the legacy struct shape for a pre-2026 client (no _meta
+// version) and the 2026-07-28 map shape (resultType + cache hints) when the
+// client negotiates 2026-07-28.
+func TestHandleRequest_ToolsListVersionGated(t *testing.T) {
+	s, store, _ := newTestServer(t, "master-token-xxxxxxxxxxxxxxxxxxxx")
+	conn := store.SeedConnection(&storage.APIConnection{ID: "c1", Name: "w", BaseURL: "https://w.example.com", AuthType: "none", Enabled: true})
+	store.SeedEndpoint(&storage.APIEndpoint{ID: "e1", ConnectionID: conn.ID, ToolName: "get_forecast", ToolDescription: "d", Path: "/f", Method: "GET"})
+
+	// Legacy: no _meta version -> ListToolsResponse struct, no cache hints.
+	legacy := s.handleRequest(context.Background(), "m", "admin", []string{"*"},
+		&JSONRPCRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+	if _, ok := legacy.Result.(ListToolsResponse); !ok {
+		t.Fatalf("legacy tools/list result = %T, want ListToolsResponse", legacy.Result)
+	}
+
+	// 2026: negotiated version -> map with resultType + cache hints.
+	got := s.handleRequest(context.Background(), "m", "admin", []string{"*"},
+		&JSONRPCRequest{JSONRPC: "2.0", ID: 2, Method: "tools/list", Params: metaParams(protocolVersion2026)})
+	res, ok := got.Result.(map[string]interface{})
+	if !ok {
+		t.Fatalf("2026 tools/list result = %T, want map", got.Result)
+	}
+	if res["resultType"] != "complete" || res["cacheScope"] != "public" || res["ttlMs"] != toolsListTTLMs {
+		t.Errorf("2026 shape missing fields: %+v", res)
+	}
+	if _, ok := res["tools"].([]Tool); !ok {
+		t.Errorf("2026 tools field = %T, want []Tool", res["tools"])
+	}
+}
+
+func TestExtractClientInfo(t *testing.T) {
+	mk := func(name, ver string) json.RawMessage {
+		b, _ := json.Marshal(map[string]interface{}{
+			"_meta": map[string]interface{}{
+				"io.modelcontextprotocol/clientInfo": map[string]interface{}{"name": name, "version": ver},
+			},
+		})
+		return b
+	}
+	tests := []struct {
+		name   string
+		params json.RawMessage
+		want   string
+	}{
+		{"name and version", mk("claude-code", "2.0"), "claude-code/2.0"},
+		{"name only", mk("antigravity", ""), "antigravity"},
+		{"no name", mk("", "9.9"), ""},
+		{"absent params", nil, ""},
+		{"no meta", json.RawMessage(`{}`), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractClientInfo(tt.params); got != tt.want {
+				t.Errorf("extractClientInfo() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

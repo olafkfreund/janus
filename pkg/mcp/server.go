@@ -57,7 +57,11 @@ type ListToolsResponse struct {
 }
 
 type Tool struct {
-	Name        string                 `json:"name"`
+	Name string `json:"name"`
+	// Title is the 2026-07-28 human-readable display name. Omitted when unset
+	// (we have no per-tool title stored yet — see #31); clients fall back to
+	// Name, so omitting it is spec-valid rather than inventing a bad label.
+	Title       string                 `json:"title,omitempty"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"inputSchema"`
 	// Meta carries out-of-band tool metadata (e.g. the tool-pinning
@@ -148,6 +152,10 @@ type auditLogEntry struct {
 	status   string
 	duration int64
 	errMsg   string
+	// client is the calling client's identity from the 2026-07-28
+	// _meta.io.modelcontextprotocol/clientInfo ("name/version"), for
+	// attribution beyond the authz token identity. Empty when not provided.
+	client string
 	// redaction is a "class=count,class=count" summary of any redaction
 	// findings for this call (arguments + result combined). It never
 	// contains matched values. Empty when redaction is disabled or found
@@ -303,6 +311,13 @@ func (s *MCPServer) auditWorker() {
 				msg = msg + "; redacted: " + e.redaction
 			} else {
 				msg = "redacted: " + e.redaction
+			}
+		}
+		if e.client != "" {
+			if msg != "" {
+				msg = "client=" + e.client + "; " + msg
+			} else {
+				msg = "client=" + e.client
 			}
 		}
 		if err := s.db.LogAudit(context.Background(), e.id, e.identity, e.tool, e.status, e.duration, msg); err != nil {
@@ -682,7 +697,12 @@ const (
 
 	// Namespaced _meta keys defined by the 2026-07-28 spec.
 	metaProtocolVersion = "io.modelcontextprotocol/protocolVersion"
+	metaClientInfo      = "io.modelcontextprotocol/clientInfo"
 	metaServerInfo      = "io.modelcontextprotocol/serverInfo"
+
+	// toolsListTTLMs is the freshness hint (ms) advertised on tools/list under
+	// 2026-07-28 (matches the spec example's 5-minute cache window).
+	toolsListTTLMs = 300000
 )
 
 var supportedVersions = []string{protocolVersion2026, protocolVersionLegacy}
@@ -729,6 +749,35 @@ func negotiateVersion(params json.RawMessage) (string, *JSONRPCError) {
 		}
 	}
 	return p.Meta.ProtocolVersion, nil
+}
+
+// extractClientInfo reads the calling client's identity from a request's
+// _meta.io.modelcontextprotocol/clientInfo (2026-07-28), returning
+// "name/version" (or just "name" when no version). Empty when absent or
+// unparseable — it is attribution-only and never affects authorization.
+func extractClientInfo(params json.RawMessage) string {
+	if len(params) == 0 {
+		return ""
+	}
+	var p struct {
+		Meta struct {
+			ClientInfo struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"io.modelcontextprotocol/clientInfo"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return ""
+	}
+	ci := p.Meta.ClientInfo
+	if ci.Name == "" {
+		return ""
+	}
+	if ci.Version != "" {
+		return ci.Name + "/" + ci.Version
+	}
+	return ci.Name
 }
 
 func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, clientRole string, clientScopes []string, req *JSONRPCRequest) *JSONRPCResponse {
@@ -783,6 +832,15 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, cl
 		tools, err := s.listTools(ctx, clientRole, clientScopes)
 		if err != nil {
 			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
+		} else if version == protocolVersion2026 {
+			// 2026-07-28 result shape: resultType + cache hints. Gated on the
+			// negotiated version so legacy clients see the unchanged shape.
+			resp.Result = map[string]interface{}{
+				"resultType": "complete",
+				"tools":      tools,
+				"ttlMs":      toolsListTTLMs,
+				"cacheScope": "public",
+			}
 		} else {
 			resp.Result = ListToolsResponse{Tools: tools}
 		}
@@ -843,17 +901,18 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, cl
 			findings = append(findings, resultFindings...)
 		}
 
+		client := extractClientInfo(req.Params)
 		logID := uuid.New().String()
 		if err != nil {
 			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
-			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "failure", duration: duration, errMsg: err.Error(), redaction: formatFindings(findings)})
+			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "failure", duration: duration, errMsg: err.Error(), redaction: formatFindings(findings), client: client})
 		} else {
 			resp.Result = CallToolResponse{
 				Content: []Content{
 					{Type: "text", Text: result},
 				},
 			}
-			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "success", duration: duration, redaction: formatFindings(findings)})
+			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "success", duration: duration, redaction: formatFindings(findings), client: client})
 		}
 
 	default:
