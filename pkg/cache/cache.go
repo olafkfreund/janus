@@ -35,6 +35,14 @@ func New[V any](ttl time.Duration) *TTLCache[V] {
 // Enabled reports whether the cache stores anything (ttl > 0).
 func (c *TTLCache[V]) Enabled() bool { return c != nil && c.ttl > 0 }
 
+// TTL returns the cache's entry lifetime (0 when nil/disabled).
+func (c *TTLCache[V]) TTL() time.Duration {
+	if c == nil {
+		return 0
+	}
+	return c.ttl
+}
+
 // Get returns the value for key if present and unexpired.
 func (c *TTLCache[V]) Get(key string) (V, bool) {
 	var zero V

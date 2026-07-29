@@ -907,10 +907,17 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, cl
 			resp.Error = &JSONRPCError{Code: -32603, Message: err.Error()}
 			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "failure", duration: duration, errMsg: err.Error(), redaction: formatFindings(findings), client: client})
 		} else {
-			resp.Result = CallToolResponse{
-				Content: []Content{
-					{Type: "text", Text: result},
-				},
+			content := []Content{{Type: "text", Text: result}}
+			if version == protocolVersion2026 {
+				// 2026-07-28 result shape: resultType + optional cache hints.
+				res := map[string]interface{}{"resultType": "complete", "content": content}
+				if ms := s.callResultTTLMs(ctx, callReq.Name); ms > 0 {
+					res["ttlMs"] = ms
+					res["cacheScope"] = "private" // per-caller; results may be connection-specific
+				}
+				resp.Result = res
+			} else {
+				resp.Result = CallToolResponse{Content: content}
 			}
 			s.logAuditAsync(auditLogEntry{id: logID, identity: clientIdentity, tool: callReq.Name, status: "success", duration: duration, redaction: formatFindings(findings), client: client})
 		}
@@ -1114,6 +1121,26 @@ func toolMeta(ep *storage.APIEndpoint) map[string]interface{} {
 		meta["version"] = ep.Version
 	}
 	return meta
+}
+
+// callResultTTLMs returns the 2026-07-28 cache-hint TTL (ms) for a tool
+// result, or 0 when it isn't cacheable. A result is advertised as cacheable
+// only when the tool is backed by an idempotent GET endpoint AND the gateway's
+// response cache is enabled — so the hint never promises freshness we don't
+// actually honor. Admin tools (no backing endpoint) are never cacheable.
+func (s *MCPServer) callResultTTLMs(ctx context.Context, name string) int64 {
+	if s.client == nil {
+		return 0
+	}
+	ttl := s.client.ResponseCacheTTL()
+	if ttl <= 0 {
+		return 0
+	}
+	ep, _, err := s.findEndpoint(ctx, name)
+	if err != nil || ep == nil || ep.Method != "GET" {
+		return 0
+	}
+	return ttl.Milliseconds()
 }
 
 func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]interface{}) (string, error) {

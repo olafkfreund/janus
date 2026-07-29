@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 )
@@ -109,6 +110,32 @@ func TestHandleRequest_ToolsListVersionGated(t *testing.T) {
 	}
 	if _, ok := res["tools"].([]Tool); !ok {
 		t.Errorf("2026 tools field = %T, want []Tool", res["tools"])
+	}
+}
+
+// callResultTTLMs advertises a cache hint only when the tool is a GET AND the
+// gateway response cache is enabled — never otherwise (honest hints).
+func TestCallResultTTLMs(t *testing.T) {
+	s, store, _ := newTestServer(t, "master-token-xxxxxxxxxxxxxxxxxxxx")
+	conn := store.SeedConnection(&storage.APIConnection{ID: "c1", Name: "w", BaseURL: "https://w.example.com", AuthType: "none", Enabled: true})
+	store.SeedEndpoint(&storage.APIEndpoint{ID: "g1", ConnectionID: conn.ID, ToolName: "get_thing", ToolDescription: "d", Path: "/g", Method: "GET"})
+	store.SeedEndpoint(&storage.APIEndpoint{ID: "p1", ConnectionID: conn.ID, ToolName: "post_thing", ToolDescription: "d", Path: "/p", Method: "POST"})
+
+	// Cache disabled: no hint for any method.
+	if ms := s.callResultTTLMs(context.Background(), "get_thing"); ms != 0 {
+		t.Errorf("cache disabled: ttlMs = %d, want 0", ms)
+	}
+
+	// Cache enabled: GET gets the hint, POST does not, unknown/admin does not.
+	s.client.EnableResponseCache(30 * time.Second)
+	if ms := s.callResultTTLMs(context.Background(), "get_thing"); ms != 30000 {
+		t.Errorf("GET with cache: ttlMs = %d, want 30000", ms)
+	}
+	if ms := s.callResultTTLMs(context.Background(), "post_thing"); ms != 0 {
+		t.Errorf("POST: ttlMs = %d, want 0", ms)
+	}
+	if ms := s.callResultTTLMs(context.Background(), "admin_add_endpoint"); ms != 0 {
+		t.Errorf("admin tool: ttlMs = %d, want 0", ms)
 	}
 }
 

@@ -46,6 +46,13 @@ func (gc *GatewayClient) EnableSecretCache(ttl time.Duration) {
 	gc.secretCache = cache.New[string](ttl)
 }
 
+// ResponseCacheTTL returns the idempotent-GET response cache lifetime, or 0
+// when response caching is disabled. Used to advertise honest 2026-07-28
+// tools/call cache hints (only when the gateway actually caches the result).
+func (gc *GatewayClient) ResponseCacheTTL() time.Duration {
+	return gc.respCache.TTL()
+}
+
 // EnableResponseCache caches idempotent GET responses for ttl. Off by default.
 func (gc *GatewayClient) EnableResponseCache(ttl time.Duration) {
 	gc.respCache = cache.New[string](ttl)
