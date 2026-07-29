@@ -672,17 +672,104 @@ func (s *MCPServer) ServeMessages(w http.ResponseWriter, r *http.Request) {
 	w.Write(payload)
 }
 
+// MCP protocol versions this server speaks. The 2026-07-28 spec makes the
+// protocol stateless (server/discover + per-request _meta version negotiation);
+// the 2024-11-05 legacy version (initialize handshake) is kept so existing
+// clients keep working. supportedVersions is newest-first.
+const (
+	protocolVersionLegacy = "2024-11-05"
+	protocolVersion2026   = "2026-07-28"
+
+	// Namespaced _meta keys defined by the 2026-07-28 spec.
+	metaProtocolVersion = "io.modelcontextprotocol/protocolVersion"
+	metaServerInfo      = "io.modelcontextprotocol/serverInfo"
+)
+
+var supportedVersions = []string{protocolVersion2026, protocolVersionLegacy}
+
+func isSupportedVersion(v string) bool {
+	for _, s := range supportedVersions {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+// negotiateVersion resolves the protocol version for a request from its
+// _meta.io.modelcontextprotocol/protocolVersion field (2026-07-28). An absent
+// or empty version defaults to the legacy 2024-11-05 (so pre-2026 clients,
+// which send no _meta, keep working unchanged). A version that is explicitly
+// present but unsupported returns an UnsupportedProtocolVersionError listing
+// what this server speaks. Params that don't decode to an object default to
+// legacy — the method handler surfaces its own param error, if any.
+func negotiateVersion(params json.RawMessage) (string, *JSONRPCError) {
+	if len(params) == 0 {
+		return protocolVersionLegacy, nil
+	}
+	var p struct {
+		Meta struct {
+			ProtocolVersion string `json:"io.modelcontextprotocol/protocolVersion"`
+		} `json:"_meta"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return protocolVersionLegacy, nil
+	}
+	if p.Meta.ProtocolVersion == "" {
+		return protocolVersionLegacy, nil
+	}
+	if !isSupportedVersion(p.Meta.ProtocolVersion) {
+		return "", &JSONRPCError{
+			Code:    -32602,
+			Message: fmt.Sprintf("unsupported protocol version %q", p.Meta.ProtocolVersion),
+			Data: map[string]interface{}{
+				"type":              "UnsupportedProtocolVersionError",
+				"supportedVersions": supportedVersions,
+			},
+		}
+	}
+	return p.Meta.ProtocolVersion, nil
+}
+
 func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, clientRole string, clientScopes []string, req *JSONRPCRequest) *JSONRPCResponse {
 	resp := &JSONRPCResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 	}
 
+	// Per-request version negotiation (2026-07-28). Absent version => legacy.
+	// An explicitly unsupported version is rejected before dispatch.
+	version, verErr := negotiateVersion(req.Params)
+	if verErr != nil {
+		resp.Error = verErr
+		return resp
+	}
+
 	switch req.Method {
-	case "initialize":
-		// Return capabilities
+	case "server/discover":
+		// 2026-07-28: the mandatory discovery request. Advertises supported
+		// versions, capabilities, and identity (under _meta), plus cache hints.
 		resp.Result = map[string]interface{}{
-			"protocolVersion": "2024-11-05",
+			"resultType":        "complete",
+			"supportedVersions": supportedVersions,
+			"capabilities": map[string]interface{}{
+				"tools": map[string]interface{}{},
+			},
+			"_meta": map[string]interface{}{
+				metaServerInfo: map[string]interface{}{
+					"name":    "mcp-api-gateway",
+					"version": "1.0.0",
+				},
+			},
+			"ttlMs":      3600000,
+			"cacheScope": "public",
+		}
+
+	case "initialize":
+		// Legacy handshake (pre-2026). Echo the negotiated version so a client
+		// that spoke a supported version sees it reflected back.
+		resp.Result = map[string]interface{}{
+			"protocolVersion": version,
 			"capabilities": map[string]interface{}{
 				"tools": map[string]interface{}{},
 			},

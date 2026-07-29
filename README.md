@@ -754,6 +754,7 @@ The gateway Deployment **omits `replicas`** — the HPA owns the count. Because 
 - **Streamable HTTP (`/mcp`) is stateless** — any replica serves any request, so scale-out needs no session affinity. This is the recommended transport for multi-replica, and aligns with the [MCP 2026-07-28 spec](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/) making the protocol stateless by default.
 - The **legacy `GET /sse` + `POST /messages`** transport is stateful (the stream is pinned to one pod). For it, the NGINX Ingress inserts a `route` cookie so the POST lands on the same pod. Clients that don't carry the cookie should use `/mcp` instead. This transport is deprecated by the 2026-07-28 spec (12-month removal window); the cookie-affinity requirement disappears once clients migrate to `/mcp`.
 - **Trace continuity**: both POST entry points extract W3C `traceparent`/`tracestate`/`baggage` and continue the caller's trace, so distributed traces span the client SDK, the gateway, and the downstream API even across replicas.
+- **2026-07-28 negotiation** *(in progress, see [#31](https://github.com/olafkfreund/janus/issues/31))*: every request is version-negotiated via `_meta.io.modelcontextprotocol/protocolVersion` (absent ⇒ legacy `2024-11-05`; an unsupported version is rejected with an `UnsupportedProtocolVersionError`), and the gateway answers the mandatory `server/discover` request. The legacy `initialize` handshake still works. Full 2026 `tools/list` shaping (`title`, `resultType`, cache hints) is tracked in #31.
 
 ---
 
