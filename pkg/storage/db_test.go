@@ -959,3 +959,108 @@ func TestNewDB_reopenSamePathRunsSchemaIdempotently(t *testing.T) {
 		t.Errorf("GetConnections() after reopen = %+v, want persisted row %+v", conns, conn)
 	}
 }
+
+// --- token cache: the hot-path auth lookup ---
+
+// TestGetClientToken_cacheServesRepeatLookups proves the cache actually spares
+// the database. resolveAuth calls GetClientToken on every MCP request, so an
+// uncached lookup here is one Postgres round-trip per tool call.
+func TestGetClientToken_cacheServesRepeatLookups(t *testing.T) {
+	d := newTestDB(t)
+	d.EnableConfigCache(time.Minute)
+
+	if err := d.SaveClientToken(context.Background(), &ClientToken{
+		Token: "tok-cache", ClientName: "svc", ClientRole: "user", Scopes: "a,b", Enabled: true,
+	}); err != nil {
+		t.Fatalf("SaveClientToken() error = %v", err)
+	}
+
+	// Prime the cache, then close the DB. A subsequent hit that still succeeds
+	// can only have been served from cache.
+	if _, err := d.GetClientToken(context.Background(), "tok-cache"); err != nil {
+		t.Fatalf("priming GetClientToken() error = %v", err)
+	}
+	if err := d.DB.Close(); err != nil {
+		t.Fatalf("closing underlying DB: %v", err)
+	}
+
+	got, err := d.GetClientToken(context.Background(), "tok-cache")
+	if err != nil {
+		t.Fatalf("cached GetClientToken() error = %v (expected a cache hit)", err)
+	}
+	if got.ClientName != "svc" || got.Scopes != "a,b" || !got.Enabled {
+		t.Fatalf("cached token mismatch: %+v", got)
+	}
+	if got.Token != "" {
+		t.Fatal("cached token must not expose the stored hash")
+	}
+}
+
+// TestGetClientToken_writesPurgeCache is the revocation guarantee: a delete must
+// not keep being served from cache for the rest of the TTL.
+func TestGetClientToken_writesPurgeCache(t *testing.T) {
+	d := newTestDB(t)
+	d.EnableConfigCache(time.Minute)
+	ctx := context.Background()
+
+	if err := d.SaveClientToken(ctx, &ClientToken{
+		Token: "tok-revoke", ClientName: "doomed", ClientRole: "user", Enabled: true,
+	}); err != nil {
+		t.Fatalf("SaveClientToken() error = %v", err)
+	}
+	if _, err := d.GetClientToken(ctx, "tok-revoke"); err != nil {
+		t.Fatalf("priming GetClientToken() error = %v", err)
+	}
+
+	if err := d.DeleteClientToken(ctx, "tok-revoke"); err != nil {
+		t.Fatalf("DeleteClientToken() error = %v", err)
+	}
+	if _, err := d.GetClientToken(ctx, "tok-revoke"); err == nil {
+		t.Fatal("revoked token still resolves — cache was not purged on delete")
+	}
+
+	// Same guarantee via the admin-facing name-keyed delete.
+	if err := d.SaveClientToken(ctx, &ClientToken{
+		Token: "tok-byname", ClientName: "doomed2", ClientRole: "user", Enabled: true,
+	}); err != nil {
+		t.Fatalf("SaveClientToken() error = %v", err)
+	}
+	if _, err := d.GetClientToken(ctx, "tok-byname"); err != nil {
+		t.Fatalf("priming GetClientToken() error = %v", err)
+	}
+	if err := d.DeleteClientTokenByName(ctx, "doomed2"); err != nil {
+		t.Fatalf("DeleteClientTokenByName() error = %v", err)
+	}
+	if _, err := d.GetClientToken(ctx, "tok-byname"); err == nil {
+		t.Fatal("token revoked by name still resolves — cache was not purged")
+	}
+}
+
+// TestGetClientToken_cachedValueIsCopied ensures a caller mutating the returned
+// struct cannot corrupt the entry served to every later request.
+func TestGetClientToken_cachedValueIsCopied(t *testing.T) {
+	d := newTestDB(t)
+	d.EnableConfigCache(time.Minute)
+	ctx := context.Background()
+
+	if err := d.SaveClientToken(ctx, &ClientToken{
+		Token: "tok-copy", ClientName: "svc", ClientRole: "user", Enabled: true,
+	}); err != nil {
+		t.Fatalf("SaveClientToken() error = %v", err)
+	}
+
+	first, err := d.GetClientToken(ctx, "tok-copy")
+	if err != nil {
+		t.Fatalf("GetClientToken() error = %v", err)
+	}
+	first.ClientRole = "admin" // a caller tampering with its copy
+	first.Enabled = false
+
+	second, err := d.GetClientToken(ctx, "tok-copy")
+	if err != nil {
+		t.Fatalf("GetClientToken() error = %v", err)
+	}
+	if second.ClientRole != "user" || !second.Enabled {
+		t.Fatalf("cache poisoned by caller mutation: %+v", second)
+	}
+}

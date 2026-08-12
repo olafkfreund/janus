@@ -26,17 +26,26 @@ type DB struct {
 	*sql.DB
 	driver string
 
-	// Optional short-TTL caches for the hottest read paths. Both are purged on any
+	// Optional short-TTL caches for the hottest read paths. All are purged on any
 	// write so callers never observe stale topology beyond the TTL window.
-	connCache *cache.TTLCache[[]*APIConnection]
-	epCache   *cache.TTLCache[[]*APIEndpoint]
+	connCache  *cache.TTLCache[[]*APIConnection]
+	epCache    *cache.TTLCache[[]*APIEndpoint]
+	tokenCache *cache.TTLCache[*ClientToken]
 }
 
-// EnableConfigCache turns on caching of GetConnections/GetAllEndpoints with the
-// given TTL. A ttl <= 0 leaves caching disabled (every read hits the database).
+// EnableConfigCache turns on caching of GetConnections/GetAllEndpoints and of
+// client-token lookups with the given TTL. A ttl <= 0 leaves caching disabled
+// (every read hits the database).
+//
+// The token cache matters most: resolveAuth calls GetClientToken on *every*
+// MCP request, so without it each tools/call costs a Postgres round-trip just
+// to re-read a row that almost never changes. Token writes purge the cache, so
+// the only staleness window is a revocation performed against a different
+// replica — bounded by ttl.
 func (d *DB) EnableConfigCache(ttl time.Duration) {
 	d.connCache = cache.New[[]*APIConnection](ttl)
 	d.epCache = cache.New[[]*APIEndpoint](ttl)
+	d.tokenCache = cache.New[*ClientToken](ttl)
 }
 
 // TunePool configures the database connection pool. Important for Postgres under
@@ -57,6 +66,13 @@ func (d *DB) TunePool(maxOpen, maxIdle int, maxLifetime time.Duration) {
 func (d *DB) invalidateCaches() {
 	d.connCache.Purge()
 	d.epCache.Purge()
+}
+
+// invalidateTokenCache clears cached client-token lookups after any token
+// write. Purging wholesale (rather than by key) keeps revocation correct for
+// the name-keyed deletes, which never see the plaintext token.
+func (d *DB) invalidateTokenCache() {
+	d.tokenCache.Purge()
 }
 
 type APIConnection struct {
@@ -498,7 +514,15 @@ func (d *DB) GetAuditLogs(ctx context.Context) ([]*AuditLog, error) {
 // GetClientToken looks up a token by its hash. The caller passes the plaintext
 // token; only its hash is ever compared against storage.
 func (d *DB) GetClientToken(ctx context.Context, token string) (*ClientToken, error) {
-	row := d.QueryRowContext(ctx, d.query("SELECT token, client_name, client_role, scopes, enabled FROM client_tokens WHERE token = ?"), HashToken(token))
+	hash := HashToken(token)
+	// ponytail: positive lookups only. A flood of *invalid* tokens still hits
+	// the DB per request; the per-IP rate limiter bounds that. Add negative
+	// caching only if bad-token volume is ever measured to matter.
+	if cached, ok := d.tokenCache.Get(hash); ok {
+		cp := *cached
+		return &cp, nil
+	}
+	row := d.QueryRowContext(ctx, d.query("SELECT token, client_name, client_role, scopes, enabled FROM client_tokens WHERE token = ?"), hash)
 	t := &ClientToken{}
 	var enabledVal int
 	err := row.Scan(&t.Token, &t.ClientName, &t.ClientRole, &t.Scopes, &enabledVal)
@@ -508,6 +532,10 @@ func (d *DB) GetClientToken(ctx context.Context, token string) (*ClientToken, er
 	// Never expose the stored hash to callers.
 	t.Token = ""
 	t.Enabled = enabledVal == 1
+	// Cache a copy so a caller mutating the returned struct cannot corrupt the
+	// entry served to every subsequent request.
+	cp := *t
+	d.tokenCache.Set(hash, &cp)
 	return t, nil
 }
 
@@ -529,11 +557,17 @@ func (d *DB) SaveClientToken(ctx context.Context, t *ClientToken) error {
 			updated_at = CURRENT_TIMESTAMP
 	`
 	_, err := d.ExecContext(ctx, d.query(query), HashToken(t.Token), t.ClientName, t.ClientRole, t.Scopes, enabledVal)
+	if err == nil {
+		d.invalidateTokenCache()
+	}
 	return err
 }
 
 func (d *DB) DeleteClientToken(ctx context.Context, token string) error {
 	_, err := d.ExecContext(ctx, d.query("DELETE FROM client_tokens WHERE token = ?"), HashToken(token))
+	if err == nil {
+		d.invalidateTokenCache()
+	}
 	return err
 }
 
@@ -541,6 +575,9 @@ func (d *DB) DeleteClientToken(ctx context.Context, token string) error {
 // the admin-facing path, since plaintext tokens are not recoverable from storage.
 func (d *DB) DeleteClientTokenByName(ctx context.Context, name string) error {
 	_, err := d.ExecContext(ctx, d.query("DELETE FROM client_tokens WHERE client_name = ?"), name)
+	if err == nil {
+		d.invalidateTokenCache()
+	}
 	return err
 }
 
