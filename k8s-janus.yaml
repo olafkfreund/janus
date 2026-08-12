@@ -96,10 +96,25 @@ spec:
           value: "30s"
         - name: RESPONSE_CACHE_TTL
           value: "10s"
+        # Pool sizing must close against the fleet: maxReplicas (10) x DB_MAX_OPEN_CONNS
+        # must stay under janus-db's max_connections=200, with headroom for the
+        # superuser reserve and any admin session. 10 x 15 = 150. The previous 25
+        # allowed 250 and would have hit "too many clients" at ~8 pods — exactly
+        # under peak load. The token cache removed the per-request auth query, so
+        # 15 is comfortably sufficient.
         - name: DB_MAX_OPEN_CONNS
-          value: "25"
+          value: "15"
         - name: DB_MAX_IDLE_CONNS
-          value: "10"
+          value: "5"
+        # Shed excess concurrent tool calls instead of growing goroutines until OOM.
+        - name: MCP_MAX_CONCURRENT_CALLS
+          value: "200"
+        # Per-authenticated-client rate limit (the per-IP limit is only a coarse
+        # DoS guard, since enterprise clients share one NAT egress address).
+        - name: MCP_RATE_PER_CLIENT
+          value: "50"
+        - name: MCP_BURST_PER_CLIENT
+          value: "100"
         - name: DOWNSTREAM_RETRIES
           value: "2"
         # The nginx ingress already terminates TLS (cert-manager, secret `janus-tls`).
@@ -111,10 +126,15 @@ spec:
         # Secret must exist (see deployment/mtls/README.md). "optional" is non-breaking.
         - name: MTLS_MODE
           value: "optional"
+        # HPA utilization is measured against the REQUEST, not the limit. With a
+        # 100m request and a 70% target, a pod using a routine 400m reported 400%
+        # and slammed the deployment straight to maxReplicas on modest load — then
+        # had nowhere left to scale. A 400m request makes the 70% target mean what
+        # it says and keeps scaling proportional to real load.
         resources:
           requests:
-            cpu: "100m"
-            memory: "128Mi"
+            cpu: "400m"
+            memory: "256Mi"
           limits:
             cpu: "1000m"
             memory: "512Mi"

@@ -18,6 +18,7 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/auth"
 	"github.com/calitti/mcp-api-gateway/pkg/gateway"
 	"github.com/calitti/mcp-api-gateway/pkg/oauth"
+	"github.com/calitti/mcp-api-gateway/pkg/ratelimit"
 	"github.com/calitti/mcp-api-gateway/pkg/redaction"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/telemetry"
@@ -119,6 +120,19 @@ type MCPServer struct {
 	maxSessions   int
 	auditCh       chan auditLogEntry
 
+	// callSem bounds concurrent in-flight tool executions. Each call can hold a
+	// goroutine (and its request/response buffers) for the downstream timeout
+	// plus retries, so without a cap one slow upstream API turns a traffic burst
+	// into unbounded goroutine growth and an OOM kill — taking every other
+	// tenant's calls down with it. Shedding at the door keeps the pod alive and
+	// lets the HPA add capacity instead.
+	callSem chan struct{}
+
+	// clientLimiter meters requests per authenticated client identity, giving
+	// each tenant its own bucket regardless of how many share a source IP.
+	// Nil means unlimited (zero-value MCPServer in tests).
+	clientLimiter *ratelimit.Limiter
+
 	// oauthValidator, when non-nil (via EnableOAuth), lets resolveAuth accept
 	// a valid OAuth 2.1 access token as an alternative to the master/client
 	// token, in addition to the existing gateway-token auth. Nil (default)
@@ -184,7 +198,13 @@ func NewMCPServer(db storage.Store, client *gateway.GatewayClient, vp vault.Vaul
 		corsOrigins: corsOrigins,
 		maxSessions: envInt("MCP_MAX_SESSIONS", 1000),
 		auditCh:     make(chan auditLogEntry, 1000),
+		callSem:     make(chan struct{}, envInt("MCP_MAX_CONCURRENT_CALLS", 200)),
+		clientLimiter: ratelimit.New(
+			float64(envInt("MCP_RATE_PER_CLIENT", 50)),
+			float64(envInt("MCP_BURST_PER_CLIENT", 100)),
+		),
 	}
+	s.clientLimiter.StartEvictionSweeper(5*time.Minute, 10*time.Minute)
 	// Single background worker drains audit log writes so the hot tools/call
 	// path never blocks on a DB INSERT.
 	go s.auditWorker()
@@ -786,6 +806,15 @@ func (s *MCPServer) handleRequest(ctx context.Context, clientIdentity string, cl
 		ID:      req.ID,
 	}
 
+	// Per-tenant fairness. The outer per-IP limiter cannot separate users who
+	// share one corporate NAT address, so meter by the authenticated identity
+	// here — after auth, where the identity is trustworthy and an attacker
+	// cannot conjure new buckets by rotating invalid tokens.
+	if !s.clientLimiter.Allow(clientIdentity) {
+		resp.Error = &JSONRPCError{Code: -32000, Message: "rate limit exceeded for this client"}
+		return resp
+	}
+
 	// Per-request version negotiation (2026-07-28). Absent version => legacy.
 	// An explicitly unsupported version is rejected before dispatch.
 	version, verErr := negotiateVersion(req.Params)
@@ -1144,6 +1173,23 @@ func (s *MCPServer) callResultTTLMs(ctx context.Context, name string) int64 {
 }
 
 func (s *MCPServer) callTool(ctx context.Context, name string, args map[string]interface{}) (string, error) {
+	// Shed load rather than queue it: a caller that waits behind a saturated
+	// gateway has usually already given up, and the goroutine it holds is what
+	// pushes the pod into an OOM.
+	// ponytail: one global cap. If a single slow connection ever starves the
+	// others, switch to a per-connection semaphore keyed by conn.ID.
+	// A nil semaphore (zero-value MCPServer, as built in tests) means unlimited:
+	// a nil channel send would otherwise take the default branch every time and
+	// shed 100% of traffic.
+	if s.callSem != nil {
+		select {
+		case s.callSem <- struct{}{}:
+			defer func() { <-s.callSem }()
+		default:
+			return "", fmt.Errorf("gateway at capacity (%d concurrent tool calls in flight), retry shortly", cap(s.callSem))
+		}
+	}
+
 	startTime := time.Now()
 
 	// Start OpenTelemetry Tracer Span

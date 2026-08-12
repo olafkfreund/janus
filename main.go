@@ -11,8 +11,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +22,7 @@ import (
 	"github.com/calitti/mcp-api-gateway/pkg/mcp"
 	"github.com/calitti/mcp-api-gateway/pkg/oauth"
 	"github.com/calitti/mcp-api-gateway/pkg/portal"
+	"github.com/calitti/mcp-api-gateway/pkg/ratelimit"
 	"github.com/calitti/mcp-api-gateway/pkg/redaction"
 	"github.com/calitti/mcp-api-gateway/pkg/storage"
 	"github.com/calitti/mcp-api-gateway/pkg/telemetry"
@@ -330,49 +331,21 @@ func metricsAuth(token string, next http.Handler) http.Handler {
 	})
 }
 
-// ipRateLimiter is a minimal per-IP token-bucket limiter for basic DoS and
-// brute-force protection. It is intentionally dependency-free; for multi-replica
-// deployments use a shared limiter (e.g. Redis) instead.
-type ipRateLimiter struct {
-	mu       sync.Mutex
-	visitors map[string]*bucket
-	rate     float64 // tokens per second
-	burst    float64
-}
+// globalLimiter is the per-IP tier: a coarse DoS / brute-force guard that runs
+// as outer middleware, before any authentication.
+//
+// It is deliberately generous. Enterprise MCP clients egress through a shared
+// NAT address, so a tight per-IP limit would make one customer's users starve
+// each other. Per-tenant fairness is enforced separately, keyed by the
+// authenticated identity, inside the MCP request path (see MCP_RATE_PER_CLIENT)
+// — that tier can safely be tight because it cannot be bypassed by minting
+// fresh tokens.
+var globalLimiter = ratelimit.New(
+	float64(getEnvInt("RATE_LIMIT_PER_IP", 300)),
+	float64(getEnvInt("RATE_LIMIT_BURST_PER_IP", 600)),
+)
 
-type bucket struct {
-	tokens float64
-	last   time.Time
-}
-
-func newIPRateLimiter(rate, burst float64) *ipRateLimiter {
-	return &ipRateLimiter{visitors: make(map[string]*bucket), rate: rate, burst: burst}
-}
-
-func (l *ipRateLimiter) allow(ip string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	now := time.Now()
-	b, ok := l.visitors[ip]
-	if !ok {
-		l.visitors[ip] = &bucket{tokens: l.burst - 1, last: now}
-		return true
-	}
-	b.tokens += now.Sub(b.last).Seconds() * l.rate
-	if b.tokens > l.burst {
-		b.tokens = l.burst
-	}
-	b.last = now
-	if b.tokens < 1 {
-		return false
-	}
-	b.tokens--
-	return true
-}
-
-var globalLimiter = newIPRateLimiter(50, 100) // ~50 req/s/IP, burst 100
-
-// Bound the visitors map's memory: sweep out buckets that have gone idle
+// Bound the bucket map's memory: sweep out buckets that have gone idle
 // beyond visitorTTL every sweepInterval. Started once at process startup.
 const (
 	sweepInterval = 5 * time.Minute
@@ -380,27 +353,18 @@ const (
 )
 
 func init() {
-	globalLimiter.startEvictionSweeper(sweepInterval, visitorTTL)
+	globalLimiter.StartEvictionSweeper(sweepInterval, visitorTTL)
 }
 
-// startEvictionSweeper runs a background goroutine that periodically deletes
-// buckets idle longer than ttl, preventing the visitors map from growing
-// without bound as distinct client IPs churn through over time.
-func (l *ipRateLimiter) startEvictionSweeper(interval, ttl time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for range ticker.C {
-			cutoff := time.Now().Add(-ttl)
-			l.mu.Lock()
-			for ip, b := range l.visitors {
-				if b.last.Before(cutoff) {
-					delete(l.visitors, ip)
-				}
-			}
-			l.mu.Unlock()
+// getEnvInt reads a positive integer from the named environment variable,
+// falling back to def if unset, empty, or invalid.
+func getEnvInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
 		}
-	}()
+	}
+	return def
 }
 
 // clientIP derives the originating client address for rate limiting.
@@ -425,7 +389,7 @@ func clientIP(r *http.Request) string {
 
 func rateLimit(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !globalLimiter.allow(clientIP(r)) {
+		if !globalLimiter.Allow(clientIP(r)) {
 			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 			return
 		}

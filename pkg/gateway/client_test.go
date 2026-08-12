@@ -3,8 +3,10 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -196,5 +198,53 @@ func TestExecuteCall_BlocksPrivateEgress(t *testing.T) {
 	_, err := client.ExecuteCall(context.Background(), conn, ep, map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected egress to be denied for a private/loopback target, got nil error")
+	}
+}
+
+// TestExecuteCall_BlocksPrivateEgressByHostname covers the case the IP-literal
+// test above cannot: a target given as a NAME that resolves to a private
+// address. validateEgress deliberately does not resolve hostnames (that would
+// put an uncached DNS lookup on every single tool call), so this asserts the
+// transport's DialContext still fails closed — which is also the TOCTOU-safe
+// check, since it validates the address actually connected to.
+func TestExecuteCall_BlocksPrivateEgressByHostname(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatalf("failed to parse test server address: %v", err)
+	}
+
+	client := NewGatewayClient(&MockVault{}, EgressPolicy{})
+	conn := &storage.APIConnection{
+		BaseURL:  "http://localhost:" + port, // name, not literal — resolves to loopback
+		AuthType: "none",
+		Enabled:  true,
+	}
+	ep := &storage.APIEndpoint{Path: "/", Method: "GET"}
+
+	if _, err := client.ExecuteCall(context.Background(), conn, ep, map[string]interface{}{}); err == nil {
+		t.Fatal("expected egress to be denied for a hostname resolving to loopback, got nil error")
+	}
+}
+
+// TestExecuteCall_AllowPrivateStillPermitsLoopback guards the opposite
+// direction: the demo/local configuration (EGRESS_ALLOW_PRIVATE=true, which the
+// live deployment sets) must still reach a private target.
+func TestExecuteCall_AllowPrivateStillPermitsLoopback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer server.Close()
+
+	client := NewGatewayClient(&MockVault{}, EgressPolicy{AllowPrivate: true})
+	conn := &storage.APIConnection{BaseURL: server.URL, AuthType: "none", Enabled: true}
+	ep := &storage.APIEndpoint{Path: "/", Method: "GET"}
+
+	if _, err := client.ExecuteCall(context.Background(), conn, ep, map[string]interface{}{}); err != nil {
+		t.Fatalf("AllowPrivate=true must permit a loopback target: %v", err)
 	}
 }

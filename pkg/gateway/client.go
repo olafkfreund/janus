@@ -184,19 +184,17 @@ func (gc *GatewayClient) validateEgress(reqURL *url.URL) error {
 		return nil
 	}
 
-	// Resolve and reject private / loopback / link-local / unspecified targets.
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("failed to resolve host %q: %w", host, err)
-	}
-	for _, ip := range ips {
-		addr, ok := netip.AddrFromSlice(ip)
-		if !ok {
-			continue
-		}
-		if isDisallowedIP(addr) {
-			return fmt.Errorf("blocked request to non-public address %s (host %q)", addr.Unmap(), host)
-		}
+	// Reject an IP-literal target here, which costs nothing. Hostname targets are
+	// NOT resolved at this point: the transport's DialContext resolves and
+	// validates every candidate address, then dials the validated IP literal
+	// directly, which is both TOCTOU-safe (no re-resolution after the check) and
+	// strictly stronger than a name pre-check.
+	//
+	// Resolving here as well would add a synchronous, uncached DNS lookup to
+	// *every* tool call — the dial-time lookup only happens when the pooled
+	// connection is cold — for no security gain.
+	if ip, err := netip.ParseAddr(host); err == nil && isDisallowedIP(ip) {
+		return fmt.Errorf("blocked request to non-public address %s", ip.Unmap())
 	}
 	return nil
 }

@@ -73,6 +73,41 @@ limiter, and SSE sessions consistent across pods.
    max 10 on CPU), **PodDisruptionBudget**, Postgres env (no RWO SQLite), and `sessionAffinity`/
    sticky ingress for the SSE transport.
 
+## 3b. Phase 1.5 — concurrency hardening (implemented)
+
+Six issues found by reviewing the hot path after phase 1 landed:
+
+1. **Client-token lookup was uncached.** `resolveAuth` → `GetClientToken` ran a `SELECT` on *every*
+   MCP request — the one hot-path query phase 1 missed, while config and secrets were cached.
+   Now cached in `storage.DB.tokenCache` under the same `CONFIG_CACHE_TTL`, purged by all three
+   token writes (`SaveClientToken`, `DeleteClientToken`, `DeleteClientTokenByName`).
+   *Known limit:* purge is per-process, so a revocation on pod A leaves pods B..N serving the token
+   for up to the TTL. A cross-pod purge needs Redis.
+2. **Connection-pool ceiling exceeded Postgres.** `maxReplicas(10) × DB_MAX_OPEN_CONNS(25) = 250`
+   against `max_connections=200` — connection refusals at ~8 pods, i.e. exactly at peak. Now 15
+   (=150, with headroom). **Any change to either value must keep `maxReplicas × DB_MAX_OPEN_CONNS`
+   under `max_connections` with room for the superuser reserve.**
+3. **HPA scaled off a CPU request 10× below the limit.** Utilization is a fraction of the *request*:
+   at `100m` request / 70% target, a pod using a routine 400m reported 400% and jumped straight to
+   `maxReplicas` on modest load — then had nowhere to go, and hit (2). Request is now `400m`.
+4. **A synchronous DNS lookup per tool call.** `validateEgress` resolved the hostname on every call;
+   the transport's `DialContext` resolves and validates again, and *that* one is authoritative
+   (TOCTOU-safe — it dials the validated IP literal, so no re-resolution can occur after the check)
+   and only runs on a cold pooled connection. The pre-check lookup is removed; IP-literal targets are
+   still rejected there for free. Covered by `TestExecuteCall_BlocksPrivateEgressByHostname`.
+5. **No cap on concurrent tool executions.** `activeQueries` counted but never limited, so one slow
+   downstream turned a burst into unbounded goroutine growth and an OOM inside the 512Mi limit —
+   killing every tenant's calls, not just the slow one. `MCP_MAX_CONCURRENT_CALLS` (default 200) now
+   sheds excess with a JSON-RPC error, which is audit-logged like any other failure.
+6. **Rate limiting keyed only by IP.** Enterprise MCP clients egress through one NAT address, so a
+   tight per-IP limit made one customer's users starve each other while an attacker on a unique IP
+   got a full bucket. Now two tiers (`pkg/ratelimit`, shared implementation):
+   - per-IP, as outer middleware — a coarse pre-auth DoS guard, raised to 300/600.
+   - per-authenticated-identity, inside `handleRequest` — real per-tenant fairness, 50/100.
+
+   The identity tier runs **after** auth deliberately: keying on an unvalidated bearer token would let
+   an attacker mint a fresh bucket per request and bypass the limiter entirely.
+
 ## 4. Phase 2 — roadmap (needs infra; safe to add incrementally)
 
 - **Postgres/RDS as system of record** — flip `DATABASE_URL`; code already supports it. Add read
