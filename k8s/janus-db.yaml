@@ -1,11 +1,19 @@
 # In-cluster Postgres for janus (mirrors the fides-db pattern — no RDS cost).
-# Applied once out-of-band; not part of the per-commit deploy. The gateway points
-# at the `janus-db` Service via DATABASE_URL (in mcp-gateway-secrets).
+# Reconciled by Flux via k8s/kustomization.yaml. The gateway points at the
+# `janus-db` Service via DATABASE_URL (in mcp-gateway-secrets).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: janus-db-pvc
   namespace: janus
+  annotations:
+    # This is the whole database. The gp3 StorageClass reclaims with Delete, so
+    # letting Flux garbage-collect this PVC — which it would do the moment this
+    # resource stops appearing in the rendered output, e.g. a bad refactor of
+    # kustomization.yaml — destroys the volume and every connection, endpoint,
+    # client token and vault secret in it. Deleting the data must stay a
+    # deliberate manual act, never a side effect of a git diff.
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   accessModes: ["ReadWriteOnce"]
   storageClassName: gp3
@@ -68,7 +76,10 @@ spec:
             cpu: "100m"
             memory: "256Mi"
           limits:
-            cpu: "1000m"
+            # "1", not "1000m" — see the note in janus-gateway.yaml: the stored
+            # value is normalised to "1", and a mismatch blocks Flux's
+            # server-side apply from adopting this Deployment.
+            cpu: "1"
             memory: "1Gi"
         readinessProbe:
           exec:

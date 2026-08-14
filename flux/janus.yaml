@@ -1,0 +1,63 @@
+# Flux entrypoint for janus on EKS `sarc-aws` (account 796973489124, eu-west-2).
+#
+# Apply this ONCE, out-of-band, after `flux install`:
+#     kubectl apply -f flux/janus.yaml
+#
+# From then on Flux pulls `k8s/` from this repo every minute and reconciles the
+# cluster to match. Nothing else applies janus manifests — the CI pipeline builds
+# and pushes an image, commits the new tag, and stops there. It holds no cluster
+# credentials.
+#
+# This file is committed for review and reproducibility but is NOT itself
+# reconciled by Flux (that would need `flux bootstrap`, which wants a dedicated
+# infrastructure repo — `sarc-aws` is shared with fides/karc/gitlab/servicenow,
+# so cluster-wide GitOps config does not belong in an application repo).
+# ponytail: hand-applied bootstrap. Two resources that change ~never; revisit if
+# more apps move to Flux on this cluster.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: janus
+  namespace: flux-system
+spec:
+  interval: 1m
+  url: https://github.com/olafkfreund/janus
+  ref:
+    branch: main
+  # Public repo — no secretRef needed. Fetch only what the Kustomization reads so
+  # a docs or Go change does not produce a new source artifact revision.
+  ignore: |
+    /*
+    !/k8s/
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: janus
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: janus
+  path: ./k8s
+  # Garbage-collect resources removed from git. Safe because the namespace and
+  # all Secrets are deliberately absent from `k8s/` (so Flux never owns them and
+  # cannot collect them), and janus-db-pvc carries a prune:disabled annotation.
+  prune: true
+  wait: true
+  targetNamespace: janus
+  # Roll back rather than leave a half-applied state if the Deployment never
+  # becomes healthy.
+  healthChecks:
+  - apiVersion: apps/v1
+    kind: Deployment
+    name: mcp-api-gateway
+    namespace: janus
+  - apiVersion: apps/v1
+    kind: Deployment
+    name: janus-db
+    namespace: janus
