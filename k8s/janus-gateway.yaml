@@ -17,6 +17,10 @@ metadata:
   labels:
     app: mcp-api-gateway
 spec:
+  # Every merge to main produces a new image tag and therefore a new ReplicaSet.
+  # The default limit is 10, which had accumulated 12 dead ReplicaSets by the time
+  # this was added. Three is enough to roll back a bad deploy by hand.
+  revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate
     rollingUpdate:
