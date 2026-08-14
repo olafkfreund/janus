@@ -223,8 +223,12 @@ and re-verify on each POST, or require the token on `/messages` too.
 - **L9. Inconsistent driver portability** — `db.query()` rewrites `?`→`$n` for Postgres but uses
   SQLite-specific `ON CONFLICT ... excluded` and an `ALTER TABLE ADD COLUMN` migration hack
   (`db.go:154`); brittle across drivers. Use a migration tool.
-- **L10. `k8s-janus.yaml` referenced by `deploy.yml` via `sed`** with a hardcoded ECR account ID
-  `796973489124`; fragile string-replace deploy. Use Kustomize/Helm image overrides.
+- ~~**L10. `k8s-janus.yaml` referenced by `deploy.yml` via `sed`** with a hardcoded ECR account ID
+  `796973489124`; fragile string-replace deploy. Use Kustomize/Helm image overrides.~~ **FIXED** — the
+  manifest moved to `k8s/janus-gateway.yaml` and the image is now set through a Kustomize `images:`
+  override (`kustomize edit set image`), not string replacement. The pipeline no longer applies to the
+  cluster at all: it commits the tag and FluxCD reconciles, so the deploy role's EKS access is now
+  unused and can be dropped from its IAM policy.
 
 ## What's done well (keep)
 

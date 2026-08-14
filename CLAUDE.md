@@ -74,20 +74,30 @@ same data and gateway client:
 
 ## Deployment (live)
 
-GitHub Actions (`.github/workflows/deploy.yml`) on push to `main`: builds the image, pushes to ECR
-`796973489124.dkr.ecr.eu-west-2.amazonaws.com/janus`, and `kubectl apply`s to EKS cluster `sarc-aws`
-(eu-west-2), namespace `janus`. Auth is GitHub OIDC via the `AWS_DEPLOY_ROLE_ARN` repo **variable**
-(see `deployment/GITHUB_OIDC_SETUP.md`).
+Delivery is **GitOps via FluxCD** — CI builds, Flux deploys. The two halves never overlap:
 
-The live deployment is **stateless gateway on in-cluster Postgres + HPA (2→10)**. Manifests are split by
-lifecycle and this matters:
-- `k8s-janus.yaml` — pipeline-applied gateway Deployment/Service/Ingress. It **omits `replicas`** (the
-  HPA owns the count) and contains **only namespaced resources** (the deploy role has namespace-scoped
-  EKS edit rights).
-- `k8s/janus-db.yaml` (Postgres) and `k8s/janus-scaling.yaml` (HPA + PDB) — applied **once out-of-band**.
-- The `janus` Namespace and the `mcp-gateway-secrets` Secret (`jwt-secret`, `gateway-token`,
-  `db-password`, `database-url`, `admin-password`) are also managed out-of-band — do not put real
-  secrets in the manifests.
+1. **Build** (`.github/workflows/deploy.yml`, on push to `main`): builds the image, pushes to ECR
+   `796973489124.dkr.ecr.eu-west-2.amazonaws.com/janus`, then runs `kustomize edit set image` and
+   **commits the new SHA tag** to `k8s/kustomization.yaml`. It has no cluster credentials. Auth to ECR
+   is GitHub OIDC via the `AWS_DEPLOY_ROLE_ARN` repo **variable** (see `deployment/GITHUB_OIDC_SETUP.md`).
+2. **Deploy**: Flux on EKS `sarc-aws` (eu-west-2) watches this repo's `k8s/` directory and reconciles
+   namespace `janus` every minute. That committed image tag is the entire CI→CD handoff.
+
+The live deployment is **stateless gateway on in-cluster Postgres + HPA (2→10)**.
+- **`k8s/` is the source of truth** — `janus-gateway.yaml` (Deployment/Service/Ingress),
+  `janus-db.yaml` (Postgres), `janus-scaling.yaml` (HPA + PDB), tied together by `kustomization.yaml`.
+  Change a manifest, merge, and Flux applies it; there is no `kubectl apply` step anywhere.
+- The gateway Deployment **omits `replicas`** so the HPA owns the count. This is load-bearing under
+  GitOps: with no `replicas` in the rendered output, Flux's server-side apply never claims that field,
+  so it cannot fight the HPA on every reconcile.
+- `janus-db-pvc` carries `kustomize.toolkit.fluxcd.io/prune: disabled`. Without it, a manifest refactor
+  that drops the PVC would make Flux garbage-collect the database volume (gp3 reclaims with `Delete`).
+- `flux/janus.yaml` (the `GitRepository` + `Kustomization`) is applied **once, by hand** — it is
+  committed for review but not self-reconciled.
+- The `janus` Namespace and the Secrets `mcp-gateway-secrets` (`jwt-secret`, `gateway-token`,
+  `db-password`, `database-url`, `admin-password`), `janus-client-ca` and `janus-tls` are managed
+  out-of-band — do not put real secrets in the manifests. They are deliberately absent from `k8s/`, so
+  Flux never owns them and `prune: true` can never collect them.
 
 Multi-replica SSE relies on **nginx cookie affinity** (`route` cookie) so `/sse` and `/messages` land on
 the same pod; clients (and test scripts) must reuse a cookie jar.

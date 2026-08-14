@@ -737,18 +737,25 @@ graph TD
 ```
 
 #### 2. Deploy Stateless Pods with PostgreSQL
-The live reference deployment (AWS EKS cluster `sarc-aws`, namespace `janus`) runs the **stateless gateway on an in-cluster PostgreSQL** (`janus-db`), with the DB URL in the `mcp-gateway-secrets` Secret. Manifests are split by lifecycle:
+The live reference deployment (AWS EKS cluster `sarc-aws`, namespace `janus`) runs the **stateless gateway on an in-cluster PostgreSQL** (`janus-db`), with the DB URL in the `mcp-gateway-secrets` Secret. It is delivered by **GitOps with FluxCD** — everything in `k8s/` is reconciled from this repository:
 
 ```bash
-# One-time (out-of-band): namespace, secret, Postgres, HPA + PDB
+# One-time (out-of-band): namespace + secrets, then the Flux entrypoint
 kubectl create namespace janus
-kubectl apply -f k8s/janus-db.yaml        # in-cluster Postgres
-kubectl apply -f k8s/janus-scaling.yaml   # HorizontalPodAutoscaler (2->10) + PodDisruptionBudget
+kubectl create secret generic mcp-gateway-secrets -n janus \
+  --from-literal=jwt-secret=... --from-literal=gateway-token=... \
+  --from-literal=db-password=... --from-literal=database-url=... \
+  --from-literal=admin-password=...
 
-# Per release (CI-applied): the stateless gateway Deployment/Service/Ingress
-kubectl apply -f k8s-janus.yaml
+flux install                        # source + kustomize controllers
+kubectl apply -f flux/janus.yaml    # GitRepository + Kustomization -> ./k8s
+
+# From here on there is no deploy command. Merge to main and Flux applies it.
+flux get kustomization janus --watch
 ```
-The gateway Deployment **omits `replicas`** — the HPA owns the count. Because state lives in Postgres (config, tokens, audit, and the AES-encrypted vault), pods are fully stateless. CI/CD deploys via GitHub Actions using **GitHub OIDC** (the `AWS_DEPLOY_ROLE_ARN` repo variable — no stored keys); see [`deployment/GITHUB_OIDC_SETUP.md`](deployment/GITHUB_OIDC_SETUP.md).
+`k8s/` holds the whole deployment — gateway, Postgres, HPA and PDB — rendered by `k8s/kustomization.yaml`. The gateway Deployment **omits `replicas`** so the HPA owns the count (and so Flux's server-side apply never claims that field). Because state lives in Postgres (config, tokens, audit, and the AES-encrypted vault), pods are fully stateless.
+
+CI's only job is to build: GitHub Actions pushes the image to ECR using **GitHub OIDC** (the `AWS_DEPLOY_ROLE_ARN` repo variable — no stored keys; see [`deployment/GITHUB_OIDC_SETUP.md`](deployment/GITHUB_OIDC_SETUP.md)), then commits the immutable SHA tag into `k8s/kustomization.yaml`. That commit is what triggers the rollout — the pipeline holds no cluster credentials at all.
 
 #### 3. Transport & session routing
 - **Streamable HTTP (`/mcp`) is stateless** — any replica serves any request, so scale-out needs no session affinity. This is the recommended transport for multi-replica, and aligns with the [MCP 2026-07-28 spec](https://blog.modelcontextprotocol.io/posts/2026-07-28-release-candidate/) making the protocol stateless by default.
@@ -811,5 +818,6 @@ The gateway parses the parameter `member_id`, forwards the query to the underlyi
 - `pkg/portal`: Admin REST API, OIDC/local login, OpenAPI, embedded SPA (`static/`).
 - `pkg/cache`: Generic dependency-free TTL cache.
 - `pkg/telemetry`: OpenTelemetry + Prometheus metrics; W3C Trace Context propagator (continues inbound `traceparent`/`tracestate`/`baggage`).
-- `k8s-janus.yaml`, `k8s/janus-db.yaml`, `k8s/janus-scaling.yaml`: Kubernetes manifests (see Scenario E).
+- `k8s/`: Kubernetes manifests + `kustomization.yaml`, reconciled by Flux (see Scenario E).
+- `flux/janus.yaml`: Flux `GitRepository` + `Kustomization` — applied once, out-of-band.
 - `SECURITY_REVIEW.md`, `SCALING_AND_CACHING.md`, `deployment/GITHUB_OIDC_SETUP.md`: security, scaling, and deploy docs.

@@ -1,5 +1,9 @@
 # Autoscaling + disruption budget for the stateless Postgres-backed gateway.
-# Apply once out-of-band. The HPA owns the Deployment's replica count.
+# Reconciled by Flux via k8s/kustomization.yaml. The HPA owns the Deployment's
+# replica count — which is why janus-gateway.yaml omits `replicas` entirely.
+# That omission is what keeps Flux and the HPA from fighting: with no `replicas`
+# field in the rendered output, Flux's server-side apply never claims ownership
+# of it, so scaling decisions stay with the HPA across every reconcile.
 #
 # Multi-replica is safe: the primary MCP transport is now Streamable HTTP
 # (POST /mcp or POST /sse) which is STATELESS — each request is authenticated by

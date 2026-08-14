@@ -6,9 +6,22 @@ The gateway's nginx ingress already terminates TLS with a real Let's Encrypt cer
 a client certificate if one is presented, without requiring one. Existing token-only
 clients (Claude Desktop, Antigravity, GitHub Copilot) are unaffected.
 
-Nothing here is applied automatically. `k8s-janus.yaml` is pipeline-applied on every
-push to `main`; the steps below are deliberately kept **out of that file** and must be
-run by hand, in order, against the live cluster.
+The ingress annotations that do the verification (`auth-tls-*`) now live in
+`k8s/janus-gateway.yaml` and are applied by **FluxCD**, not by hand. What remains
+manual is the one thing that cannot live in git: the `janus-client-ca` Secret holding
+your client CA.
+
+> **Do not `kubectl patch` or `kubectl annotate` the Ingress.** Flux reconciles this
+> namespace from `k8s/` and will revert any out-of-band edit within ~10 minutes. To
+> change mTLS behaviour, edit `k8s/janus-gateway.yaml` and merge — that is the only
+> durable path now. (The old `ingress-mtls-patch.yaml` overlay was removed for exactly
+> this reason; its annotations are already in the tracked manifest.)
+
+**Order matters.** The annotations reference the `janus-client-ca` Secret, so that
+Secret must exist before Flux applies an Ingress that points at it — otherwise nginx
+rejects the Ingress and breaks the gateway for *every* client, including token-only
+ones. Create the Secret first (step 2 below); the annotations are already deployed, so
+on a fresh cluster do step 2 before applying `flux/janus.yaml`.
 
 ## Prerequisites
 
@@ -35,33 +48,25 @@ kubectl -n janus create secret generic janus-client-ca \
   --from-file=ca.crt=deployment/mtls/certs/ca.crt
 ```
 
-The ingress patch in step 3 references this secret by name
+The Ingress references this secret by name
 (`nginx.ingress.kubernetes.io/auth-tls-secret: "janus/janus-client-ca"`). If the
-secret doesn't exist yet when the patch is applied, nginx will fail to configure TLS
-verification for this Ingress — always create the secret first.
+secret doesn't exist when Flux applies the Ingress, nginx will fail to configure TLS
+verification — always create the secret first.
 
-### 3. Apply the ingress mTLS patch
+### 3. The ingress annotations — already in git
 
-Use a merge patch, **not** `kubectl apply -f`, so only the mTLS annotations are
-touched and nothing else on the Ingress (TLS block, routing rules, other
-annotations) is disturbed — see the warning in
-[`ingress-mtls-patch.yaml`](ingress-mtls-patch.yaml) for why a plain `apply` is unsafe here:
+Nothing to apply. These four annotations live in `k8s/janus-gateway.yaml`:
 
-```bash
-kubectl -n janus patch ingress mcp-api-gateway \
-  --type merge \
-  --patch-file deployment/mtls/ingress-mtls-patch.yaml
+```yaml
+nginx.ingress.kubernetes.io/auth-tls-secret: "janus/janus-client-ca"
+nginx.ingress.kubernetes.io/auth-tls-verify-client: "optional"
+nginx.ingress.kubernetes.io/auth-tls-verify-depth: "1"
+nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: "true"
 ```
 
-Or the equivalent one-liner with no file:
-
-```bash
-kubectl -n janus annotate ingress mcp-api-gateway --overwrite \
-  nginx.ingress.kubernetes.io/auth-tls-secret="janus/janus-client-ca" \
-  nginx.ingress.kubernetes.io/auth-tls-verify-client="optional" \
-  nginx.ingress.kubernetes.io/auth-tls-verify-depth="1" \
-  nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream="true"
-```
+To change them, edit that file and merge. Flux applies the Ingress as a whole object,
+so the old "use a merge patch, never `kubectl apply -f`" caveat no longer applies —
+there is no partial overlay to reconcile against any more.
 
 Verify:
 
@@ -69,17 +74,17 @@ Verify:
 kubectl -n janus get ingress mcp-api-gateway -o yaml | grep auth-tls
 ```
 
-### 4. Set `MTLS_MODE=optional` on the deployment
+### 4. `MTLS_MODE=optional` on the deployment
 
-```bash
-kubectl -n janus set env deployment/mcp-api-gateway MTLS_MODE=optional
-```
+Already set in `k8s/janus-gateway.yaml`, so Flux keeps it applied — nothing to do.
+Do **not** use `kubectl set env`; it will be reverted on the next reconcile. Change
+the manifest and merge instead.
 
 This just informs the gateway (`pkg/config`) that mTLS is enforced at "optional"
 strength upstream, so it reports its security posture accurately in the portal. The
-ingress annotation from step 3 is what actually does the TLS verification; the pod
-never terminates TLS itself here (`TLS_TERMINATED_AT_PROXY=true`, set in
-`k8s-janus.yaml`).
+ingress annotations are what actually do the TLS verification; the pod never
+terminates TLS itself here (`TLS_TERMINATED_AT_PROXY=true`, also set in
+`k8s/janus-gateway.yaml`).
 
 ### 5. Test
 

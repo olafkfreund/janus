@@ -136,7 +136,11 @@ spec:
             cpu: "400m"
             memory: "256Mi"
           limits:
-            cpu: "1000m"
+            # "1", not "1000m": the API server normalises 1000m to 1 on write, so
+            # a manifest saying "1000m" never matches the stored value and Flux's
+            # server-side apply reports a field-ownership conflict instead of
+            # adopting the Deployment. Same quantity, canonical spelling.
+            cpu: "1"
             memory: "512Mi"
         startupProbe:
           httpGet:

@@ -1,0 +1,39 @@
+# Everything janus needs on the cluster, in one place. Reconciled by Flux
+# (see flux/janus.yaml) — nothing here is applied by the CI pipeline anymore.
+#
+# Previously these three files were split by lifecycle: janus-gateway.yaml was
+# pipeline-applied on every commit while janus-db.yaml and janus-scaling.yaml
+# were applied by hand, "once, out-of-band". That split existed only because the
+# pipeline used `kubectl apply -f <one file>`. Under GitOps the cluster is
+# reconciled from git as a whole, so the hand-applied tier has no reason to
+# exist — and the DB/HPA manifests stop being documentation of something that
+# was done manually and start being the actual source of truth.
+#
+# Still managed OUT-OF-BAND (deliberately absent here):
+#   - Namespace `janus`             (cluster-scoped)
+#   - Secret `mcp-gateway-secrets`  (jwt-secret, gateway-token, db-password,
+#                                    database-url, admin-password)
+#   - Secret `janus-client-ca`      (optional mTLS; see deployment/mtls/)
+#   - Secret `janus-tls`            (issued by cert-manager, not authored)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: janus
+
+resources:
+- janus-db.yaml
+- janus-gateway.yaml
+- janus-scaling.yaml
+
+# The deploy pipeline rewrites `newTag` to the built commit SHA and commits it;
+# Flux notices the commit and rolls the Deployment. This one field is the entire
+# handoff between CI (builds images) and CD (applies them) — CI has no cluster
+# credentials at all now.
+#
+# ponytail: a committed tag, not Flux image-automation. Automation would drop
+# this field and the CI commit step, but needs ECR credentials for
+# image-reflector-controller (ECR auth tokens expire hourly, so it needs IRSA or
+# a refresh CronJob). Switch when that plumbing is worth it.
+images:
+- name: 796973489124.dkr.ecr.eu-west-2.amazonaws.com/janus
+  newTag: ad23d3f377859149a91357b8bcc988be2d4aef87
