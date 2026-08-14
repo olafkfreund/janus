@@ -36,4 +36,4 @@ resources:
 # a refresh CronJob). Switch when that plumbing is worth it.
 images:
 - name: 796973489124.dkr.ecr.eu-west-2.amazonaws.com/janus
-  newTag: 6d2d065be97e7cf4791f16b9cbe862caa8399b17
+  newTag: d92fd7235fce7df4b3abf655794e1d25f7c426d4
